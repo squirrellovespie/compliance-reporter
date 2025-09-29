@@ -84,5 +84,3 @@ npm run dev
 ```
 
 ---
-
-Do you want me to also add **example request payloads** (like for `/reports/run` and `/sections/upsert`) so it’s crystal clear for anyone calling the APIs?
