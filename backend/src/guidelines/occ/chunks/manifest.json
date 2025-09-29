@@ -1,0 +1,10 @@
+{
+  "framework": "occ",
+  "source_files": [
+    "OCC_Guidelines_2023.pdf"
+  ],
+  "chunk_file": "chunks.jsonl",
+  "chunk_count": 23,
+  "chunk_size_tokens": 500,
+  "overlap_tokens": 80
+}

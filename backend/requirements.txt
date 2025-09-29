@@ -1,0 +1,18 @@
+# Core runtime
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7
+python-dotenv>=1.0
+orjson>=3.9
+
+# Guideline ingestion / chunking
+PyMuPDF==1.26.1      
+tiktoken>=0.9.0      
+
+# Retrieval / embeddings
+langchain>=0.3.25
+langchain-openai>=0.3.17
+chromadb>=1.0.10
+openai>=1.81.0
+
+reportlab==4.4.1

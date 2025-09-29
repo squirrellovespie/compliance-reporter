@@ -1,0 +1,10 @@
+{
+  "framework": "seal",
+  "source_files": [
+    "SEAL_Methodology.pdf"
+  ],
+  "chunk_file": "chunks.jsonl",
+  "chunk_count": 138,
+  "chunk_size_tokens": 500,
+  "overlap_tokens": 80
+}

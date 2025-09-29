@@ -1,0 +1,14 @@
+controls:
+  - id: "OCC-IT-GOV-1"
+    name: "Board and Senior Management Oversight"
+    micro_requirements:
+      - id: "policies_review"
+        prompt: "Evidence that the board reviews and approves IT policies annually"
+        synonyms: ["policy review", "annual approval", "board meeting minutes"]
+
+  - id: "OCC-TPRM-2"
+    name: "Third-Party Oversight"
+    micro_requirements:
+      - id: "due_diligence"
+        prompt: "Evidence of due diligence performed before engaging critical vendors"
+        synonyms: ["vendor assessment", "onboarding", "risk review"]

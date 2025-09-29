@@ -1,0 +1,17 @@
+controls:
+  - id: "1.1"
+    name: "Technology and Cyber Risk Governance"
+    micro_requirements:
+      - id: "board_oversight"
+        prompt: "Evidence of board oversight of technology and cyber risk in the last 12 months"
+        synonyms: ["board risk committee", "steering committee", "quarterly dashboard"]
+      - id: "risk_appetite"
+        prompt: "Defined risk appetite and metrics for technology/cyber risk"
+        synonyms: ["KRI", "KPI", "risk appetite statement"]
+
+  - id: "2.3"
+    name: "Technology Operations"
+    micro_requirements:
+      - id: "incident_response"
+        prompt: "Evidence of incident response testing in the last 12 months"
+        synonyms: ["tabletop exercise", "simulation", "playbook test"]

@@ -1,0 +1,32 @@
+from __future__ import annotations
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .routes.index import router as index_router
+from .routes.ingest import router as ingest_router
+from .routes.sections import router as sections_router
+from .routes.reports import router as reports_router
+from .routes.sections import router as sections_router
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # dev: allow all; tighten in prod
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(index_router)
+app.include_router(ingest_router)
+app.include_router(sections_router)
+app.include_router(reports_router)
+
+def create_app() -> FastAPI:
+    return app

@@ -1,0 +1,14 @@
+controls:
+  - id: "SEAL-001"
+    name: "Policy Currency"
+    micro_requirements:
+      - id: "policy_review"
+        prompt: "Evidence that policies are reviewed annually and not expired"
+        synonyms: ["policy expiry", "last updated", "annual review"]
+
+  - id: "SEAL-002"
+    name: "Incident Management"
+    micro_requirements:
+      - id: "ir_testing"
+        prompt: "Evidence of incident response testing aligned to SEAL methodology"
+        synonyms: ["IR tabletop", "playbook validation", "simulation"]

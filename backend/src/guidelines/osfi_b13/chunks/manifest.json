@@ -1,0 +1,10 @@
+{
+  "framework": "osfi_b13",
+  "source_files": [
+    "OSFI_B_13_Guidelines.pdf"
+  ],
+  "chunk_file": "chunks.jsonl",
+  "chunk_count": 25,
+  "chunk_size_tokens": 500,
+  "overlap_tokens": 80
+}

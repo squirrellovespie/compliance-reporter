@@ -1,0 +1,10 @@
+controls:
+  - id: "3.2"
+    name: "Third-Party Risk Management"
+    micro_requirements:
+      - id: "contract_clauses"
+        prompt: "Evidence that contracts include exit strategy and termination clauses"
+        synonyms: ["exit plan", "termination rights", "offboarding"]
+      - id: "concentration_risk"
+        prompt: "Evidence of concentration risk analysis for critical vendors"
+        synonyms: ["vendor concentration", "supplier dependency", "single point of failure"]
