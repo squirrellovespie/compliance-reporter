@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+*.log
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Environment files
+.env
+*.env
+
+# Data uploads and runs
+backend/src/data/uploads/
+backend/src/data/runs/
+backend/src/data/chroma/
+
+# Node / Frontend
+node_modules/
+dist/
+*.lock
+*.log
+
+# IDE / Editor junk
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Reports / PDFs
+*.pdf
+
+# Coverage / test
+.coverage
+htmlcov/
+pytest_cache/
