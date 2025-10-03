@@ -42,9 +42,6 @@ An application to generate AI-assisted compliance reports for law firms and bank
    * Results are saved as JSON and can be rendered into a styled PDF.
 
 ---
-Got it ✅ — here’s the cleaned up version of the README section without the diagram, with **LLM marked as required**, and the note removed.
-
----
 
 # 🔧 RAG Pipeline:
 
