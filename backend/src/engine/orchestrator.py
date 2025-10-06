@@ -1,83 +1,239 @@
+# backend/src/engine/orchestrator.py
 from __future__ import annotations
-import json, time, traceback
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Set
 from pathlib import Path
-from typing import Any, Dict, List
+import os, json
 
 from assessors.registry import get_assessor
-from assessors.base import BuildContext, BaseFrameworkAssessor
-from engine.sections_store import load_sections, SectionDef
+from assessors.base import BuildContext, BaseFrameworkAssessor  # your base/types
 
-RUNS_DIR = Path(__file__).resolve().parents[1] / "data" / "runs"
+from services.openai_client import chat_complete
+from services.vector_langchain import query as vs_query
+
+# persistent runs directory (for JSON + PDFs)
+RUNS_DIR = Path(os.getenv("RUNS_PATH", "./src/data/runs")).resolve()
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-def _pick_sections(framework: str, selected_ids: List[str]) -> List[SectionDef]:
-    all_defs = load_sections(framework)
-    if not selected_ids:
-        return all_defs
-    sel = set(selected_ids)
-    return [s for s in all_defs if s.id in sel]
+# ---- Rolling context knobs ----
+MEM_SUMMARY_TOKENS = 350       # target length of rolling narrative memory
+MEM_POINTS_LIMIT   = 12        # max bullets carried forward
+RETRIEVE_K         = 8         # top-k RAG chunks per section
 
+# ---------- Rolling Memory ----------
+@dataclass
+class RollingMemory:
+    narrative_summary: str = ""                           # compact narrative so far
+    points: List[str] = field(default_factory=list)       # bullets so far
+    used_evidence: Set[Tuple[str, int]] = field(default_factory=set)  # (doc_id, page)
+
+    def to_prompt_block(self) -> str:
+        parts: List[str] = []
+        if self.narrative_summary:
+            parts.append(f"Context so far (do not repeat): {self.narrative_summary}")
+        if self.points:
+            bullets = "\n".join(f"- {p}" for p in self.points[:MEM_POINTS_LIMIT])
+            parts.append(f"Key points already covered (avoid repetition):\n{bullets}")
+        if self.used_evidence:
+            parts.append(
+                "Evidence already cited (avoid reusing unless critical): " +
+                ", ".join(f"{d}@p{p}" for d, p in list(self.used_evidence)[:15]) +
+                ("…" if len(self.used_evidence) > 15 else "")
+            )
+        return "\n\n".join(parts)
+
+# ---------- helpers ----------
+def _summarize_text_for_memory(text: str) -> Dict[str, Any]:
+    """
+    Summarize a generated section to compact memory: {narrative, bullets[]}
+    """
+    prompt = (
+        "Summarize the following section into: "
+        "1) one 150–250 token narrative paragraph (no new facts), and "
+        "2) 5–7 concise bullets. "
+        "Return JSON with keys: narrative, bullets (array of strings)."
+    )
+    messages = [
+        {"role": "system", "content": "You are a precise summarizer for an audit report."},
+        {"role": "user", "content": prompt + "\n\n---\n" + text.strip()},
+    ]
+    out = chat_complete(messages=messages, response_format="json_object", temperature=0.2, max_tokens=600)
+    try:
+        return json.loads(out)
+    except Exception:
+        return {"narrative": "", "bullets": []}
+
+def _retrieve_chunks(framework: str, query_text: str, used_ev: Set[Tuple[str,int]]) -> List[Dict[str, Any]]:
+    """
+    Retrieve top-k chunks from your vector store; prefer fresh (not yet cited) chunks,
+    but allow some duplicates if necessary to meet K.
+    """
+    # Get more than needed; we'll dedupe and trim
+    raw = vs_query(collection_name=f"fw_{framework}", text=query_text, k=RETRIEVE_K * 2)
+
+    fresh, dups = [], []
+    for r in raw:
+        meta = r.get("metadata", {})
+        key = (meta.get("doc_id", meta.get("source_pdf", "")), int(meta.get("page", 0)))
+        (fresh if key not in used_ev else dups).append(r)
+
+    results = fresh[:RETRIEVE_K]
+    if len(results) < RETRIEVE_K:
+        results += dups[:RETRIEVE_K - len(results)]
+    return results[:RETRIEVE_K]
+
+def _render_section_llm(
+    *,
+    framework: str,
+    section_name: str,
+    section_prompt: str,
+    overarching_prompt: str,
+    memory: RollingMemory,
+    firm: str,
+    scope: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Produce one section text using:
+    - Overarching prompt
+    - Rolling memory (prior narrative + bullets + used evidence)
+    - Fresh RAG chunks (with dedupe against used evidence)
+    """
+    # Build retrieval query from section prompt + context diagnostics
+    retrieval_query = f"{section_name}: {section_prompt}\nFirm: {firm}\nScope: {scope or 'full'}"
+    chunks = _retrieve_chunks(framework, retrieval_query, memory.used_evidence)
+
+    # Prepare evidence snippet block and collect new usage
+    ev_lines: List[str] = []
+    new_used: Set[Tuple[str,int]] = set()
+    for c in chunks:
+        meta = c.get("metadata", {})
+        doc_id = meta.get("doc_id", meta.get("source_pdf", ""))
+        page = int(meta.get("page", 0))
+        text = (c.get("text", "") or "")[:800]
+        ev_lines.append(f"[{doc_id} p.{page}] {text}")
+        new_used.add((doc_id, page))
+
+    system = (
+        f"You are generating the '{section_name}' section of a compliance report for '{firm}'. "
+        f"Maintain coherence and avoid repeating earlier points.\n\n"
+        f"Global Guidance:\n{(overarching_prompt or '').strip()}"
+    )
+    user = (
+        f"Section directive:\n{section_prompt.strip()}\n\n"
+        f"{memory.to_prompt_block()}\n\n"
+        "Use the retrieved evidence to ground claims (quote minimally, synthesize conclusions):\n"
+        + "\n---\n".join(ev_lines)
+    )
+    text = chat_complete(
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.3,
+        max_tokens=1100,
+    )
+    return {"text": text, "used": new_used}
+
+def generate_report_sections(
+    *,
+    framework: str,
+    firm: str,
+    sections_ordered: List[Dict[str, Any]],  # [{id,name,position,default_prompt}, ...] (sorted by position)
+    overarching_prompt: str,
+    scope: Optional[str],
+    prompt_overrides: Dict[str, str],
+) -> Dict[str, str]:
+    """
+    Generate all section texts with rolling memory.
+    Returns: {section_name: prose}
+    """
+    memory = RollingMemory()
+    out: Dict[str, str] = {}
+
+    # (Optional) brief outline → better global coherence
+    outline_msg = [
+        {"role": "system", "content": "You are an audit report planner."},
+        {"role": "user", "content": "Create a 1-level outline for the following sections in order:\n" +
+                                    "\n".join(f"- {s['name']}" for s in sections_ordered)}
+    ]
+    outline = chat_complete(messages=outline_msg, temperature=0.2, max_tokens=250)
+    # Seed memory points with outline bullets (trim)
+    memory.points = [ln.strip("- ").strip() for ln in outline.split("\n") if ln.strip()][:MEM_POINTS_LIMIT]
+
+    # Generate each section in order
+    for s in sections_ordered:
+        sec_name = s["name"]
+        sec_prompt = (prompt_overrides.get(s["id"]) or s.get("default_prompt") or "").strip()
+        sec = _render_section_llm(
+            framework=framework,
+            section_name=sec_name,
+            section_prompt=sec_prompt,
+            overarching_prompt=overarching_prompt,
+            memory=memory,
+            firm=firm,
+            scope=scope,
+        )
+        text: str = sec["text"]
+        out[sec_name] = text
+
+        # Update memory from this section
+        summ = _summarize_text_for_memory(text)
+        # Merge narratives (re-summarize to keep short)
+        combined = (memory.narrative_summary + "\n" + (summ.get("narrative") or "")).strip()
+        re_summ = _summarize_text_for_memory(combined)
+        memory.narrative_summary = (re_summ.get("narrative") or "")[:MEM_SUMMARY_TOKENS * 6]  # hard cap
+        # Merge bullets (de-dup, cap)
+        memory.points = list(dict.fromkeys(memory.points + (summ.get("bullets") or [])))[:MEM_POINTS_LIMIT]
+        # Merge evidence used
+        memory.used_evidence |= set(sec["used"])
+
+    return out
+
+# ---------- public API ----------
 def run_report(
     framework: str,
     firm: str,
-    scope: str | None = None,
-    selected_section_ids: List[str] | None = None,
-    prompt_overrides: Dict[str, str] | None = None,
+    scope: Optional[str],
+    *,
+    selected_sections: List[Dict[str, Any]],   # already resolved & sorted [{id,name,position,default_prompt},...]
+    prompt_overrides: Dict[str, str],
+    overarching_prompt: str,
 ) -> Dict[str, Any]:
-    prompt_overrides = prompt_overrides or {}
-    selected_section_ids = selected_section_ids or []
-
-    # 1) Load assessor
+    """
+    The main orchestrator entrypoint used by /reports/run.
+    - Computes findings via the framework assessor
+    - Generates narrative sections with rolling memory
+    - Persists run JSON
+    """
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
 
-    # 2) Findings
-    try:
-        ctx = BuildContext(firm=firm, scope=scope)
-        findings = assessor.build_findings(ctx)
-    except Exception as e:
-        traceback.print_exc()
-        etype = e.__class__.__name__
-        raise RuntimeError(f"build_findings failed: {etype}: {e}")
+    # Findings first (your pipeline)
+    findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
 
-    # 3) Sections
-    try:
-        section_defs = _pick_sections(framework, selected_section_ids)
-        if not section_defs:
-            raise RuntimeError("no sections defined for framework — seed or upsert sections first")
+    # Narrative sections using rolling memory + RAG
+    sections_text = generate_report_sections(
+        framework=framework,
+        firm=firm,
+        sections_ordered=selected_sections,
+        overarching_prompt=overarching_prompt or "",
+        scope=scope,
+        prompt_overrides=prompt_overrides or {},
+    )
 
-        sections_map: Dict[str, str] = {}
-        for sec in section_defs:
-            use_prompt = (prompt_overrides or {}).get(sec.id, sec.prompt or "")
-            text = assessor.render_section_text(
-                section_id=sec.id,
-                section_name=sec.name,
-                prompt=use_prompt,
-                firm=firm,
-                scope=scope,
-                findings=findings,
-            )
-            sections_map[sec.name] = text
-
-        run_id = f"{framework}-{firm}-{int(time.time())}"
-        payload = {
-            "run_id": run_id,
-            "framework": framework,
-            "firm": firm,
-            "scope": scope,
-            "selected_sections": [s.name for s in section_defs],
-            "sections": sections_map,
-            "findings": findings,
-        }
-        (RUNS_DIR / f"{run_id}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        return payload
-    except Exception as e:
-        traceback.print_exc()
-        etype = e.__class__.__name__
-        raise RuntimeError(f"render sections failed: {etype}: {e}")
+    # Persist run
+    run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
+    out = {
+        "run_id": run_id,
+        "framework": framework,
+        "firm": firm,
+        "selected_sections": [s["name"] for s in selected_sections],
+        "sections": sections_text,
+        "findings": findings,
+    }
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNS_DIR / f"{run_id}.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+    return out
 
 def load_run(run_id: str) -> Dict[str, Any]:
-    fp = RUNS_DIR / f"{run_id}.json"
-    if not fp.exists():
+    p = RUNS_DIR / f"{run_id}.json"
+    if not p.exists():
         raise FileNotFoundError(f"run not found: {run_id}")
-    return json.loads(fp.read_text(encoding="utf-8"))
+    return json.loads(p.read_text(encoding="utf-8"))

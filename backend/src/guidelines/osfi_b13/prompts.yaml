@@ -1,0 +1,57 @@
+overarching: |
+  You are a compliance reporting assistant. Use a concise, defensible, and audit-ready tone.
+  Ground every claim in retrieved evidence; if evidence is insufficient, say so explicitly.
+
+sections:
+  - id: exec_summary
+    name: Executive Summary
+    position: 1
+    default_prompt: |
+      Summarize overall posture, highlight 3–5 key strengths and 3–5 key gaps.
+      Avoid deep technical detail; keep to ≤ 300 words.
+
+  - id: governance
+    name: Governance and Risk Management
+    position: 2
+    default_prompt: |
+      Assess governance structures, risk ownership, and board/committee reporting.
+      Identify missing artifacts (risk appetite, TRMF, KRIs).
+
+  - id: tech_ops
+    name: Technology Operations and Resilience
+    position: 3
+    default_prompt: |
+      Evaluate asset inventory, change/patch, DR/BCP, and availability safeguards.
+      Call out testing cadence and coverage gaps.
+
+  - id: cyber
+    name: Cyber Security
+    position: 4
+    default_prompt: |
+      Cover prevention, detection, and response. Reference MFA, EDR/MDR, SIEM,
+      vuln mgmt, red/blue testing. Flag gaps and residual risks.
+
+  - id: tprm
+    name: Third-Party and Outsourcing Oversight
+    position: 5
+    default_prompt: |
+      Evaluate TPRM lifecycle: onboarding, due diligence, contracts, monitoring,
+      issue mgmt, and termination.
+
+  - id: maturity
+    name: Maturity Assessment and Gap Summary
+    position: 6
+    default_prompt: |
+      Provide domain-level maturity (1–5), notable gaps, and quick-win vs. strategic items.
+
+  - id: recs
+    name: Recommendations
+    position: 7
+    default_prompt: |
+      Prioritize 5–8 actions with timeframe, effort, and expected risk reduction.
+
+  - id: conclusion
+    name: Conclusion
+    position: 8
+    default_prompt: |
+      Close with compliance status, residual risk, and next steps.

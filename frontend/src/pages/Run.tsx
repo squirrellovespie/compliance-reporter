@@ -1,87 +1,96 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
+import { useEffect, useState } from "react";
 import { listSections, runReport, downloadReportPdf } from "../api";
 
 export default function Run() {
   const [framework, setFramework] = useState("seal");
-  const [firm, setFirm] = useState("Legal Partners LLC");
-  const [sections, setSections] = useState<Array<{id:string; name:string; position:number; prompt:string;}>>([]);
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [firm, setFirm] = useState("ABC");
+  const [sections, setSections] = useState<Array<{id:string; name:string; position:number; default_prompt:string}>>([]);
+  const [selected, setSelected] = useState<string[]>([]);
   const [overrides, setOverrides] = useState<Record<string,string>>({});
+  const [overarching, setOverarching] = useState<string>("");
   const [runId, setRunId] = useState<string>("");
-  const [msg, setMsg] = useState("");
 
-  async function load() {
-    setMsg("Loading sections...");
-    try {
-      const r = await listSections(framework);
-      const ss = (r.sections ?? []).sort((a:any,b:any)=>a.position-b.position);
-      setSections(ss);
-      setSelected(Object.fromEntries(ss.map((s:any) => [s.id, true])));
-      setOverrides({});
-      setMsg("");
-    } catch (e:any) {
-      setMsg(`Error: ${e.message}`);
-    }
-  }
-  useEffect(() => { load(); }, [framework]);
+  useEffect(() => {
+    (async () => {
+      const data = await listSections(framework);
+      setSections(data.sections);
+      setSelected(data.sections.map(s => s.id)); // select all by default
+      setOverarching(data.overarching_prompt || ""); // <-- default from file
+      setOverrides(Object.fromEntries(
+        data.sections.map(s => [s.id, s.default_prompt || ""])
+      ));
+    })();
+  }, [framework]);
 
-  async function go() {
-    setMsg("Generating...");
-    try {
-      const selectedIds = sections.filter(s => selected[s.id]).map(s => s.id);
-      const r = await runReport({
-        framework,
-        firm,
-        selected_section_ids: selectedIds,
-        prompt_overrides: overrides,
-      });
-      setRunId(r.run_id);
-      setMsg(`Done: ${r.run_id}`);
-    } catch (e:any) {
-      setMsg(`Error: ${e.message}`);
-    }
+  async function onRun() {
+    const res = await runReport({
+      framework,
+      firm,
+      selected_section_ids: selected,
+      prompt_overrides: overrides,
+      overarching_prompt: overarching, // UI override wins
+    });
+    setRunId(res.run_id);
   }
 
   return (
     <div style={{display:"grid", gap:16}}>
-      <h2>Run Report</h2>
-
-      <div>
-        <label>Framework: </label>
-        <select value={framework} onChange={e=>setFramework(e.target.value)}>
-          {["seal","occ","osfi_b10","osfi_b13"].map(f => <option key={f} value={f}>{f}</option>)}
+      <div style={{display:"flex", gap:12, alignItems:"center"}}>
+        <label>Framework</label>
+        <select value={framework} onChange={e => setFramework(e.target.value)}>
+          <option value="seal">seal</option>
+          <option value="osfi_b10">osfi_b10</option>
+          <option value="osfi_b13">osfi_b13</option>
+          <option value="occ">occ</option>
         </select>
+        <label>Firm</label>
+        <input value={firm} onChange={e => setFirm(e.target.value)} />
       </div>
 
       <div>
-        <label>Firm: </label>
-        <input value={firm} onChange={e=>setFirm(e.target.value)} />
+        <label style={{display:"block", fontWeight:600}}>Overarching Prompt</label>
+        <textarea
+          value={overarching}
+          onChange={e => setOverarching(e.target.value)}
+          rows={6}
+          style={{width:"100%"}}
+          placeholder="Global guidance that applies to all sections…"
+        />
       </div>
 
-      <div style={{fontSize:12, color:"#666"}}>{msg}</div>
-
-      <div style={{border:"1px solid #ddd", borderRadius:8, padding:12}}>
+      <div>
         <h3>Sections</h3>
-        {sections.map((s) => (
-          <div key={s.id} style={{display:"grid", gridTemplateColumns:"24px 160px 1fr", gap:8, alignItems:"start", marginBottom:8}}>
-            <input type="checkbox" checked={!!selected[s.id]} onChange={e=>setSelected({...selected, [s.id]: e.target.checked})}/>
-            <div><b>{s.position}.</b> {s.name} <span style={{opacity:.6, fontSize:12}}>({s.id})</span></div>
-            <textarea
-              placeholder={`Prompt override for ${s.name} (optional)`}
-              value={overrides[s.id] ?? ""}
-              onChange={e=>setOverrides({...overrides, [s.id]: e.target.value})}
-              rows={3}
-            />
+        {sections.map(s => (
+          <div key={s.id} style={{border:"1px solid #ddd", borderRadius:8, padding:10, marginBottom:8}}>
+            <label>
+              <input
+                type="checkbox"
+                checked={selected.includes(s.id)}
+                onChange={e => {
+                  setSelected(prev => e.target.checked ? [...prev, s.id] : prev.filter(x => x !== s.id));
+                }}
+              />
+              &nbsp;{s.name} (pos {s.position})
+            </label>
+            <div>
+              <small>Prompt (override)</small>
+              <textarea
+                rows={3}
+                style={{width:"100%"}}
+                value={overrides[s.id] ?? ""}
+                onChange={e => setOverrides(prev => ({...prev, [s.id]: e.target.value}))}
+              />
+            </div>
           </div>
         ))}
       </div>
 
-      <div>
-        <button onClick={go}>Generate</button>
-        {runId && (
-          <button onClick={()=>downloadReportPdf(runId)} style={{marginLeft:8}}>Download PDF</button>
-        )}
+      <div style={{display:"flex", gap:8}}>
+        <button onClick={onRun}>Run</button>
+        {runId && <button onClick={() => downloadReportPdf(runId)}>Download PDF</button>}
       </div>
+      {runId && <div>Run ID: {runId}</div>}
     </div>
   );
 }

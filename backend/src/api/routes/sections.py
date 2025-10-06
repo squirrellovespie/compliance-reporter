@@ -2,6 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
+from engine.prompt_store import load_prompts
 
 from engine.sections_store import (
     load_sections, upsert_sections, delete_section, seed_defaults
@@ -15,8 +16,15 @@ class UpsertBody(BaseModel):
 
 @router.get("/{framework}")
 def list_sections(framework: str):
-    secs = load_sections(framework)
-    return {"framework": framework, "sections": [s.__dict__ for s in secs]}
+    try:
+        data = load_prompts(framework)
+        return {
+            "framework": framework,
+            "overarching_prompt": data.get("overarching",""),
+            "sections": data.get("sections", []),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/upsert")
 def upsert(body: UpsertBody):

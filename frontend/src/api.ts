@@ -4,7 +4,11 @@ const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 export async function listSections(framework: string) {
   const res = await fetch(`${BASE}/sections/${framework}`);
   if (!res.ok) throw new Error(await res.text());
-  return res.json(); // { framework, sections: [...] }
+  return res.json() as Promise<{
+    framework: string;
+    overarching_prompt: string;
+    sections: Array<{ id: string; name: string; position: number; default_prompt: string }>;
+  }>;
 }
 
 export async function upsertSections(
@@ -63,6 +67,7 @@ export async function runReport(opts: {
   scope?: string;
   selected_section_ids: string[];
   prompt_overrides: Record<string, string>;
+  overarching_prompt?: string;
 }) {
   const res = await fetch(`${BASE}/reports/run`, {
     method: "POST",
@@ -70,7 +75,7 @@ export async function runReport(opts: {
     body: JSON.stringify(opts),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json(); // { run_id, result }
+  return res.json();
 }
 
 export async function getReport(runId: string) {
