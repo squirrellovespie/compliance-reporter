@@ -91,6 +91,70 @@ An application to generate AI-assisted compliance reports for law firms and bank
   * Loads assessor, builds findings, generates section narratives
   * Persists run JSON to `backend/src/data/runs/<run_id>.json`
 
+---
+
+## 🧠 Rolling Context Generation
+
+To maintain continuity and avoid repetitive content across sections, the system implements a **rolling context memory** mechanism inside  
+[`backend/src/engine/orchestrator.py`](backend/src/engine/orchestrator.py).
+
+### How It Works
+
+1. **RollingMemory Class**
+
+   * Tracks evolving state across all report sections:
+     * `narrative_summary` – a compact running summary of all prior sections.
+     * `points` – bullet-style highlights (up to 12) carried forward for reference.
+     * `used_evidence` – keeps track of evidence snippets already cited.
+
+2. **Context Injection**
+
+   Each section prompt includes:
+   * The **overarching prompt** (sets tone, format, and standards).
+   * The **section-specific directive**.
+   * A **context block** summarizing prior content:
+     ```text
+     Context so far (do not repeat): <narrative_summary>
+     Key points already covered:
+     - <point 1>
+     - <point 2>
+     Evidence already cited: <doc_id@page list>
+     ```
+   * This context ensures continuity, consistency, and avoids redundancy.
+
+3. **Memory Update**
+
+   After generating each section:
+   * The model’s output is summarized into a compact `narrative` + `bullets`.
+   * These are merged back into the rolling memory.
+   * The evidence list is updated to prevent re-citation of the same source.
+
+4. **Result**
+
+   The LLM maintains awareness of the full report’s evolution — allowing sections like *Executive Summary* and *Conclusion* to naturally reflect earlier insights and maintain tone consistency.
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `backend/src/engine/orchestrator.py` | Implements rolling context orchestration |
+| `RollingMemory` dataclass | Stores narrative, key points, and used evidence |
+| `_summarize_text_for_memory()` | Summarizes generated text into reusable memory |
+| `_render_section_llm()` | Builds the composite prompt with memory and retrieved evidence |
+| `generate_report_sections()` | Iteratively builds the final report narrative |
+
+### Benefits
+
+| Aspect | Without Rolling Context | With Rolling Context |
+|--------|--------------------------|----------------------|
+| Flow & Coherence | Disjointed per-section outputs | Smooth, continuous narrative |
+| Repetition | Frequent overlap | Reduced duplication |
+| Tone Consistency | Variable | Consistent, regulator-ready |
+| Evidence Management | Reused citations | Tracked & de-duplicated |
+| Summary Quality | Static per section | Evolving memory with key insights |
+
+---
+
 ### Rendering & APIs
 
 * **PDF rendering**: `backend/src/engine/renderers/pdf_report.py` (ReportLab)

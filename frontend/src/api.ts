@@ -58,6 +58,17 @@ export async function uploadEvidence(firm: string, file: File) {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   }
+
+  export async function uploadEvidenceBatch(firm: string, files: File[]) {
+    const fd = new FormData();
+    fd.append("firm", firm);
+    for (const f of files) {
+      fd.append("files", f); 
+    }
+    const res = await fetch(`${BASE}/ingest/evidence-batch`, { method: "POST", body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json(); 
+  }
   
 
 // --------- Reports ---------
