@@ -22,6 +22,7 @@ class RunReportRequest(BaseModel):
     selected_section_ids: List[str]
     prompt_overrides: Dict[str, str] = {}
     overarching_prompt: Optional[str] = ""
+    include_rag_debug: bool = False   # <-- NEW
 
 
 def _resolve_sections(framework: str, selected_ids: List[str]) -> List[Dict[str, Any]]:
@@ -61,7 +62,8 @@ def list_sections(framework: str):
 @router.post("/run")
 def run(req: RunReportRequest):
     """
-    Run the report with selected sections (+ per-section overrides) and optional overarching prompt override.
+    Run the report with selected sections (+ per-section overrides),
+    optional overarching prompt override, and optional RAG debug return.
     """
     try:
         selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
@@ -75,11 +77,11 @@ def run(req: RunReportRequest):
             selected_sections=selected_sections,
             prompt_overrides=req.prompt_overrides or {},
             overarching_prompt=overarching,
+            include_rag_debug=req.include_rag_debug,  # <-- pass through
         )
         return {"run_id": result["run_id"], "result": result}
     except Exception as e:
         traceback.print_exc()
-        # surface a concise message to the client
         raise HTTPException(status_code=500, detail=f"/reports/run error: {str(e)}")
 
 
@@ -101,3 +103,22 @@ def get_pdf(run_id: str):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"/reports/{run_id}/pdf error: {str(e)}")
+
+
+@router.get("/{run_id}/rag_debug")
+def get_rag_debug(run_id: str):
+    """
+    Convenience endpoint for the UI to fetch only the RAG chunk debug.
+    Returns: { <section_id>: [ {doc_id, page, score, preview}, ... ] }
+    """
+    try:
+        data = load_run(run_id)
+        rag = data.get("rag_debug")
+        if rag is None:
+            raise HTTPException(status_code=404, detail="RAG debug not available for this run.")
+        return rag
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"/reports/{run_id}/rag_debug error: {str(e)}")

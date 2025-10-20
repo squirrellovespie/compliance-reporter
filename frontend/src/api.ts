@@ -79,6 +79,7 @@ export async function runReport(opts: {
   selected_section_ids: string[];
   prompt_overrides: Record<string, string>;
   overarching_prompt?: string;
+  include_rag_debug?: boolean; // <-- NEW
 }) {
   const res = await fetch(`${BASE}/reports/run`, {
     method: "POST",
@@ -86,7 +87,13 @@ export async function runReport(opts: {
     body: JSON.stringify(opts),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  return res.json(); // { run_id, result: { ..., rag_debug? } }
+}
+
+export async function getRagDebug(runId: string) {
+  const res = await fetch(`${BASE}/reports/${runId}/rag_debug`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { <sectionId>: [ {doc_id, page, score, preview}, ... ] }
 }
 
 export async function getReport(runId: string) {

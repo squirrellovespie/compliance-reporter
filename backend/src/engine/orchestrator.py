@@ -6,7 +6,7 @@ from pathlib import Path
 import os, json
 
 from assessors.registry import get_assessor
-from assessors.base import BuildContext, BaseFrameworkAssessor  # your base/types
+from assessors.base import BuildContext, BaseFrameworkAssessor
 
 from services.openai_client import chat_complete
 from services.vector_langchain import query as vs_query
@@ -44,9 +44,6 @@ class RollingMemory:
 
 # ---------- helpers ----------
 def _summarize_text_for_memory(text: str) -> Dict[str, Any]:
-    """
-    Summarize a generated section to compact memory: {narrative, bullets[]}
-    """
     prompt = (
         "Summarize the following section into: "
         "1) one 150–250 token narrative paragraph (no new facts), and "
@@ -63,28 +60,80 @@ def _summarize_text_for_memory(text: str) -> Dict[str, Any]:
     except Exception:
         return {"narrative": "", "bullets": []}
 
-def _retrieve_chunks(framework: str, query_text: str, used_ev: Set[Tuple[str,int]]) -> List[Dict[str, Any]]:
+def _retrieve_chunks(
+    framework: str,
+    firm: str,
+    query_text: str,
+    used_ev: Set[Tuple[str,int]],
+    k: int = RETRIEVE_K,
+) -> List[Dict[str, Any]]:
     """
-    Retrieve top-k chunks from your vector store; prefer fresh (not yet cited) chunks,
-    but allow some duplicates if necessary to meet K.
+    Retrieve top-k across multiple collections:
+      - fw_<framework>      (guidelines)
+      - assessment_<firm>   (firm assessment)
+      - evidence_<firm>     (supporting evidence)
+    Prefer chunks not yet used (by (doc_id,page)), then fill with dupes if needed.
+    Returns rows with normalized fields: text, metadata{doc_id,page}, score, source.
     """
-    # Get more than needed; we'll dedupe and trim
-    raw = vs_query(collection_name=f"fw_{framework}", text=query_text, k=RETRIEVE_K * 2)
+    # Ask for more than needed from each pool; we’ll merge -> dedupe -> trim
+    pool = []
 
+    def _pull(collection: str, source_label: str):
+        try:
+            rows = vs_query(collection_name=collection, text=query_text, k=k*2) or []
+            for r in rows:
+                m = r.get("metadata", {}) or {}
+                doc_id = m.get("doc_id") or m.get("source_pdf") or source_label
+                page = int(m.get("page", 0))
+                pool.append({
+                    "text": r.get("text", "") or "",
+                    "metadata": {"doc_id": doc_id, "page": page},
+                    "score": r.get("score", None),
+                    "source": source_label,
+                })
+        except Exception:
+            # collection may not exist yet; ignore
+            pass
+
+    _pull(f"fw_{framework}",        f"fw_{framework}")
+    _pull(f"assessment_{firm}",     f"assessment_{firm}")
+    _pull(f"evidence_{firm}",       f"evidence_{firm}")
+
+    # De-duplicate by (doc_id, page, text_head) and split into fresh vs already used
+    seen = set()
     fresh, dups = [], []
-    for r in raw:
-        meta = r.get("metadata", {})
-        key = (meta.get("doc_id", meta.get("source_pdf", "")), int(meta.get("page", 0)))
-        (fresh if key not in used_ev else dups).append(r)
+    for r in pool:
+        doc_id = r["metadata"]["doc_id"]
+        page   = r["metadata"]["page"]
+        head   = (r["text"][:120] or "").strip()
+        key_all = (doc_id, page, head)
+        if key_all in seen:
+            continue
+        seen.add(key_all)
 
-    results = fresh[:RETRIEVE_K]
-    if len(results) < RETRIEVE_K:
-        results += dups[:RETRIEVE_K - len(results)]
-    return results[:RETRIEVE_K]
+        key_used = (doc_id, page)
+        (fresh if key_used not in used_ev else dups).append(r)
+
+    # Sort each bucket by descending score if available
+    def _score(row): 
+        s = row.get("score")
+        try:
+            return float(s) if s is not None else -1e9
+        except Exception:
+            return -1e9
+
+    fresh.sort(key=_score, reverse=True)
+    dups.sort(key=_score, reverse=True)
+
+    out = fresh[:k]
+    if len(out) < k:
+        out += dups[:(k - len(out))]
+    return out[:k]
 
 def _render_section_llm(
     *,
     framework: str,
+    section_id: str,
     section_name: str,
     section_prompt: str,
     overarching_prompt: str,
@@ -97,21 +146,38 @@ def _render_section_llm(
     - Overarching prompt
     - Rolling memory (prior narrative + bullets + used evidence)
     - Fresh RAG chunks (with dedupe against used evidence)
+    Also returns 'rag_debug' list for UI inspection.
     """
-    # Build retrieval query from section prompt + context diagnostics
     retrieval_query = f"{section_name}: {section_prompt}\nFirm: {firm}\nScope: {scope or 'full'}"
-    chunks = _retrieve_chunks(framework, retrieval_query, memory.used_evidence)
+    chunks = _retrieve_chunks(
+    framework=framework,
+    firm=firm,
+    query_text=retrieval_query,
+    used_ev=memory.used_evidence,
+    k=RETRIEVE_K,
+)
 
-    # Prepare evidence snippet block and collect new usage
     ev_lines: List[str] = []
     new_used: Set[Tuple[str,int]] = set()
+    rag_debug: List[Dict[str, Any]] = []
+
     for c in chunks:
-        meta = c.get("metadata", {})
-        doc_id = meta.get("doc_id", meta.get("source_pdf", ""))
-        page = int(meta.get("page", 0))
-        text = (c.get("text", "") or "")[:800]
-        ev_lines.append(f"[{doc_id} p.{page}] {text}")
+        meta   = c["metadata"]
+        doc_id = meta["doc_id"]
+        page   = meta["page"]
+        text   = c["text"]
+        score  = c.get("score")
+        source = c.get("source")
+
+        ev_lines.append(f"[{doc_id} p.{page}] {text[:800]}")
         new_used.add((doc_id, page))
+        rag_debug.append({
+            "doc_id": doc_id,
+            "page": page,
+            "score": float(score) if isinstance(score, (int, float)) else None,
+            "preview": (text or "")[:400].replace("\n", " ").strip(),
+            "source": source,  # <--- NEW: tells you fw_ / assessment_ / evidence_
+        })
 
     system = (
         f"You are generating the '{section_name}' section of a compliance report for '{firm}'. "
@@ -129,7 +195,7 @@ def _render_section_llm(
         temperature=0.3,
         max_tokens=1100,
     )
-    return {"text": text, "used": new_used}
+    return {"text": text, "used": new_used, "rag_debug": rag_debug, "section_id": section_id}
 
 def generate_report_sections(
     *,
@@ -139,30 +205,34 @@ def generate_report_sections(
     overarching_prompt: str,
     scope: Optional[str],
     prompt_overrides: Dict[str, str],
-) -> Dict[str, str]:
+    include_rag_debug: bool = False,
+) -> Tuple[Dict[str, str], Optional[Dict[str, List[Dict[str, Any]]]]]:
     """
     Generate all section texts with rolling memory.
-    Returns: {section_name: prose}
+    Returns: (sections_text, rag_debug_map_or_None)
     """
     memory = RollingMemory()
-    out: Dict[str, str] = {}
+    out_text: Dict[str, str] = {}
+    rag_debug_map: Dict[str, List[Dict[str, Any]]] = {}
 
-    # (Optional) brief outline → better global coherence
+    # Small outline → better global coherence
     outline_msg = [
         {"role": "system", "content": "You are an audit report planner."},
         {"role": "user", "content": "Create a 1-level outline for the following sections in order:\n" +
                                     "\n".join(f"- {s['name']}" for s in sections_ordered)}
     ]
     outline = chat_complete(messages=outline_msg, temperature=0.2, max_tokens=250)
-    # Seed memory points with outline bullets (trim)
     memory.points = [ln.strip("- ").strip() for ln in outline.split("\n") if ln.strip()][:MEM_POINTS_LIMIT]
 
     # Generate each section in order
     for s in sections_ordered:
+        sec_id = s["id"]
         sec_name = s["name"]
         sec_prompt = (prompt_overrides.get(s["id"]) or s.get("default_prompt") or "").strip()
+
         sec = _render_section_llm(
             framework=framework,
+            section_id=sec_id,
             section_name=sec_name,
             section_prompt=sec_prompt,
             overarching_prompt=overarching_prompt,
@@ -171,20 +241,20 @@ def generate_report_sections(
             scope=scope,
         )
         text: str = sec["text"]
-        out[sec_name] = text
+        out_text[sec_name] = text
 
-        # Update memory from this section
+        if include_rag_debug:
+            rag_debug_map[sec_id] = sec["rag_debug"]
+
+        # Update rolling memory
         summ = _summarize_text_for_memory(text)
-        # Merge narratives (re-summarize to keep short)
         combined = (memory.narrative_summary + "\n" + (summ.get("narrative") or "")).strip()
         re_summ = _summarize_text_for_memory(combined)
-        memory.narrative_summary = (re_summ.get("narrative") or "")[:MEM_SUMMARY_TOKENS * 6]  # hard cap
-        # Merge bullets (de-dup, cap)
+        memory.narrative_summary = (re_summ.get("narrative") or "")[:MEM_SUMMARY_TOKENS * 6]
         memory.points = list(dict.fromkeys(memory.points + (summ.get("bullets") or [])))[:MEM_POINTS_LIMIT]
-        # Merge evidence used
         memory.used_evidence |= set(sec["used"])
 
-    return out
+    return out_text, (rag_debug_map if include_rag_debug else None)
 
 # ---------- public API ----------
 def run_report(
@@ -192,33 +262,32 @@ def run_report(
     firm: str,
     scope: Optional[str],
     *,
-    selected_sections: List[Dict[str, Any]],   # already resolved & sorted [{id,name,position,default_prompt},...]
+    selected_sections: List[Dict[str, Any]],
     prompt_overrides: Dict[str, str],
     overarching_prompt: str,
+    include_rag_debug: bool = False,
 ) -> Dict[str, Any]:
     """
     The main orchestrator entrypoint used by /reports/run.
     - Computes findings via the framework assessor
-    - Generates narrative sections with rolling memory
+    - Generates narrative sections with rolling memory (+ optional RAG debug)
     - Persists run JSON
     """
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
 
-    # Findings first (your pipeline)
     findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
 
-    # Narrative sections using rolling memory + RAG
-    sections_text = generate_report_sections(
+    sections_text, rag_debug = generate_report_sections(
         framework=framework,
         firm=firm,
         sections_ordered=selected_sections,
         overarching_prompt=overarching_prompt or "",
         scope=scope,
         prompt_overrides=prompt_overrides or {},
+        include_rag_debug=include_rag_debug,
     )
 
-    # Persist run
     run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
     out = {
         "run_id": run_id,
@@ -228,6 +297,9 @@ def run_report(
         "sections": sections_text,
         "findings": findings,
     }
+    if include_rag_debug and rag_debug:
+        out["rag_debug"] = rag_debug
+
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     (RUNS_DIR / f"{run_id}.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
     return out
