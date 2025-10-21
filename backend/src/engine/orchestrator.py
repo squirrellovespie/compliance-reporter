@@ -1,4 +1,3 @@
-# backend/src/engine/orchestrator.py
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Set
@@ -11,21 +10,18 @@ from assessors.base import BuildContext, BaseFrameworkAssessor
 from services.openai_client import chat_complete
 from services.vector_langchain import query as vs_query
 
-# persistent runs directory (for JSON + PDFs)
 RUNS_DIR = Path(os.getenv("RUNS_PATH", "./src/data/runs")).resolve()
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---- Rolling context knobs ----
-MEM_SUMMARY_TOKENS = 350       # target length of rolling narrative memory
-MEM_POINTS_LIMIT   = 12        # max bullets carried forward
-RETRIEVE_K         = 8         # top-k RAG chunks per section
+MEM_SUMMARY_TOKENS = 350
+MEM_POINTS_LIMIT   = 12
+RETRIEVE_K         = 8
 
-# ---------- Rolling Memory ----------
 @dataclass
 class RollingMemory:
-    narrative_summary: str = ""                           # compact narrative so far
-    points: List[str] = field(default_factory=list)       # bullets so far
-    used_evidence: Set[Tuple[str, int]] = field(default_factory=set)  # (doc_id, page)
+    narrative_summary: str = ""
+    points: List[str] = field(default_factory=list)
+    used_evidence: Set[Tuple[str, int]] = field(default_factory=set)
 
     def to_prompt_block(self) -> str:
         parts: List[str] = []
@@ -42,7 +38,6 @@ class RollingMemory:
             )
         return "\n\n".join(parts)
 
-# ---------- helpers ----------
 def _summarize_text_for_memory(text: str) -> Dict[str, Any]:
     prompt = (
         "Summarize the following section into: "
@@ -66,21 +61,26 @@ def _retrieve_chunks(
     query_text: str,
     used_ev: Set[Tuple[str,int]],
     k: int = RETRIEVE_K,
+    *,
+    retrieval_strategy: str = "cosine",   # NEW
 ) -> List[Dict[str, Any]]:
     """
-    Retrieve top-k across multiple collections:
-      - fw_<framework>      (guidelines)
-      - assessment_<firm>   (firm assessment)
-      - evidence_<firm>     (supporting evidence)
-    Prefer chunks not yet used (by (doc_id,page)), then fill with dupes if needed.
-    Returns rows with normalized fields: text, metadata{doc_id,page}, score, source.
+    Pull from:
+      - fw_<framework>
+      - assessment_<firm>
+      - evidence_<firm>
+    Respect retrieval_strategy: "cosine" | "mmr" | "hybrid"
     """
-    # Ask for more than needed from each pool; we’ll merge -> dedupe -> trim
-    pool = []
+    pool: List[Dict[str, Any]] = []
 
     def _pull(collection: str, source_label: str):
         try:
-            rows = vs_query(collection_name=collection, text=query_text, k=k*2) or []
+            rows = vs_query(
+                collection_name=collection,
+                text=query_text,
+                k=k*2,
+                strategy=retrieval_strategy,  # NEW
+            ) or []
             for r in rows:
                 m = r.get("metadata", {}) or {}
                 doc_id = m.get("doc_id") or m.get("source_pdf") or source_label
@@ -92,14 +92,12 @@ def _retrieve_chunks(
                     "source": source_label,
                 })
         except Exception:
-            # collection may not exist yet; ignore
             pass
 
-    _pull(f"fw_{framework}",        f"fw_{framework}")
-    _pull(f"assessment_{firm}",     f"assessment_{firm}")
-    _pull(f"evidence_{firm}",       f"evidence_{firm}")
+    _pull(f"fw_{framework}",    f"fw_{framework}")
+    _pull(f"assessment_{firm}", f"assessment_{firm}")
+    _pull(f"evidence_{firm}",   f"evidence_{firm}")
 
-    # De-duplicate by (doc_id, page, text_head) and split into fresh vs already used
     seen = set()
     fresh, dups = [], []
     for r in pool:
@@ -114,8 +112,7 @@ def _retrieve_chunks(
         key_used = (doc_id, page)
         (fresh if key_used not in used_ev else dups).append(r)
 
-    # Sort each bucket by descending score if available
-    def _score(row): 
+    def _score(row):
         s = row.get("score")
         try:
             return float(s) if s is not None else -1e9
@@ -140,22 +137,17 @@ def _render_section_llm(
     memory: RollingMemory,
     firm: str,
     scope: Optional[str],
+    retrieval_strategy: str = "cosine",  # NEW
 ) -> Dict[str, Any]:
-    """
-    Produce one section text using:
-    - Overarching prompt
-    - Rolling memory (prior narrative + bullets + used evidence)
-    - Fresh RAG chunks (with dedupe against used evidence)
-    Also returns 'rag_debug' list for UI inspection.
-    """
     retrieval_query = f"{section_name}: {section_prompt}\nFirm: {firm}\nScope: {scope or 'full'}"
     chunks = _retrieve_chunks(
-    framework=framework,
-    firm=firm,
-    query_text=retrieval_query,
-    used_ev=memory.used_evidence,
-    k=RETRIEVE_K,
-)
+        framework=framework,
+        firm=firm,
+        query_text=retrieval_query,
+        used_ev=memory.used_evidence,
+        k=RETRIEVE_K,
+        retrieval_strategy=retrieval_strategy,  # NEW
+    )
 
     ev_lines: List[str] = []
     new_used: Set[Tuple[str,int]] = set()
@@ -176,7 +168,7 @@ def _render_section_llm(
             "page": page,
             "score": float(score) if isinstance(score, (int, float)) else None,
             "preview": (text or "")[:400].replace("\n", " ").strip(),
-            "source": source,  # <--- NEW: tells you fw_ / assessment_ / evidence_
+            "source": source,
         })
 
     system = (
@@ -201,21 +193,17 @@ def generate_report_sections(
     *,
     framework: str,
     firm: str,
-    sections_ordered: List[Dict[str, Any]],  # [{id,name,position,default_prompt}, ...] (sorted by position)
+    sections_ordered: List[Dict[str, Any]],
     overarching_prompt: str,
     scope: Optional[str],
     prompt_overrides: Dict[str, str],
     include_rag_debug: bool = False,
+    retrieval_strategy: str = "cosine",   # NEW
 ) -> Tuple[Dict[str, str], Optional[Dict[str, List[Dict[str, Any]]]]]:
-    """
-    Generate all section texts with rolling memory.
-    Returns: (sections_text, rag_debug_map_or_None)
-    """
     memory = RollingMemory()
     out_text: Dict[str, str] = {}
     rag_debug_map: Dict[str, List[Dict[str, Any]]] = {}
 
-    # Small outline → better global coherence
     outline_msg = [
         {"role": "system", "content": "You are an audit report planner."},
         {"role": "user", "content": "Create a 1-level outline for the following sections in order:\n" +
@@ -224,7 +212,6 @@ def generate_report_sections(
     outline = chat_complete(messages=outline_msg, temperature=0.2, max_tokens=250)
     memory.points = [ln.strip("- ").strip() for ln in outline.split("\n") if ln.strip()][:MEM_POINTS_LIMIT]
 
-    # Generate each section in order
     for s in sections_ordered:
         sec_id = s["id"]
         sec_name = s["name"]
@@ -239,6 +226,7 @@ def generate_report_sections(
             memory=memory,
             firm=firm,
             scope=scope,
+            retrieval_strategy=retrieval_strategy,  # NEW
         )
         text: str = sec["text"]
         out_text[sec_name] = text
@@ -246,7 +234,6 @@ def generate_report_sections(
         if include_rag_debug:
             rag_debug_map[sec_id] = sec["rag_debug"]
 
-        # Update rolling memory
         summ = _summarize_text_for_memory(text)
         combined = (memory.narrative_summary + "\n" + (summ.get("narrative") or "")).strip()
         re_summ = _summarize_text_for_memory(combined)
@@ -256,7 +243,6 @@ def generate_report_sections(
 
     return out_text, (rag_debug_map if include_rag_debug else None)
 
-# ---------- public API ----------
 def run_report(
     framework: str,
     firm: str,
@@ -266,13 +252,8 @@ def run_report(
     prompt_overrides: Dict[str, str],
     overarching_prompt: str,
     include_rag_debug: bool = False,
+    retrieval_strategy: str = "cosine",  # NEW
 ) -> Dict[str, Any]:
-    """
-    The main orchestrator entrypoint used by /reports/run.
-    - Computes findings via the framework assessor
-    - Generates narrative sections with rolling memory (+ optional RAG debug)
-    - Persists run JSON
-    """
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
 
@@ -286,6 +267,7 @@ def run_report(
         scope=scope,
         prompt_overrides=prompt_overrides or {},
         include_rag_debug=include_rag_debug,
+        retrieval_strategy=retrieval_strategy,  # NEW
     )
 
     run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"

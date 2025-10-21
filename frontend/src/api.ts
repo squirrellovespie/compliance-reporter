@@ -79,7 +79,8 @@ export async function runReport(opts: {
   selected_section_ids: string[];
   prompt_overrides: Record<string, string>;
   overarching_prompt?: string;
-  include_rag_debug?: boolean; // <-- NEW
+  include_rag_debug?: boolean;
+  retrieval_strategy?: "cosine" | "mmr" | "hybrid";
 }) {
   const res = await fetch(`${BASE}/reports/run`, {
     method: "POST",
