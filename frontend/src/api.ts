@@ -11,65 +11,33 @@ export async function listSections(framework: string) {
   }>;
 }
 
-export async function upsertSections(
-  framework: string,
-  sections: Array<{ id: string; name: string; position: number; prompt: string }>
-) {
-  const res = await fetch(`${BASE}/sections/upsert`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ framework, sections }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function deleteSection(framework: string, sectionId: string) {
-  const res = await fetch(`${BASE}/sections/${framework}/${sectionId}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 // --------- Ingest ---------
 export async function uploadAssessment(firm: string, file: File) {
-    const form = new FormData();
-    form.append("firm", firm);
-    form.append("file", file);
-  
-    const res = await fetch(`${BASE}/ingest/assessment`, {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
-  
-export async function uploadEvidence(firm: string, file: File) {
-    const form = new FormData();
-    form.append("firm", firm);
-    form.append("file", file);
-  
-    const res = await fetch(`${BASE}/ingest/evidence`, {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
+  const form = new FormData();
+  form.append("firm", firm);
+  form.append("file", file);
+  const res = await fetch(`${BASE}/ingest/assessment`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
-  export async function uploadEvidenceBatch(firm: string, files: File[]) {
-    const fd = new FormData();
-    fd.append("firm", firm);
-    for (const f of files) {
-      fd.append("files", f); 
-    }
-    const res = await fetch(`${BASE}/ingest/evidence-batch`, { method: "POST", body: fd });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json(); 
-  }
-  
+export async function uploadEvidence(firm: string, file: File) {
+  const form = new FormData();
+  form.append("firm", firm);
+  form.append("file", file);
+  const res = await fetch(`${BASE}/ingest/evidence`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function uploadEvidenceBatch(firm: string, files: File[]) {
+  const fd = new FormData();
+  fd.append("firm", firm);
+  for (const f of files) fd.append("files", f);
+  const res = await fetch(`${BASE}/ingest/evidence-batch`, { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
 
 // --------- Reports ---------
 export async function runReport(opts: {
@@ -81,6 +49,8 @@ export async function runReport(opts: {
   overarching_prompt?: string;
   include_rag_debug?: boolean;
   retrieval_strategy?: "cosine" | "mmr" | "hybrid";
+  provider?: "openai" | "xai";    // <-- NEW
+  model?: string;                 // <-- NEW
 }) {
   const res = await fetch(`${BASE}/reports/run`, {
     method: "POST",
@@ -88,13 +58,13 @@ export async function runReport(opts: {
     body: JSON.stringify(opts),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json(); // { run_id, result: { ..., rag_debug? } }
+  return res.json();
 }
 
 export async function getRagDebug(runId: string) {
   const res = await fetch(`${BASE}/reports/${runId}/rag_debug`);
   if (!res.ok) throw new Error(await res.text());
-  return res.json(); // { <sectionId>: [ {doc_id, page, score, preview}, ... ] }
+  return res.json();
 }
 
 export async function getReport(runId: string) {

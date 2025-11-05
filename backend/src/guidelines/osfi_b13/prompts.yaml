@@ -10,7 +10,6 @@ overarching: |
 
   STYLE & OUTPUT
   - Professional, concise, and defensible.
-  - Around 350–400 words per section.
   - Use clear headings, structured paragraphs, and bullet points.
   - Avoid introductions or conclusions outside the section.
   - Tie findings directly to provided evidence; if absent, state “Not evidenced.”
@@ -23,105 +22,95 @@ overarching: |
   3. Cyber Security – Principles 14-17 (identify, defend, detect, respond/recover)
   Reports must assess each domain’s outcomes: governance clarity, stable & scalable operations, and secure technology posture.
 
-
 sections:
   - id: exec_summary
     name: Executive Summary
     position: 1
     default_prompt: |
-      Summarize (~400 words) the FRFI’s overall technology and cyber posture. 
-      Highlight top 3–4 strengths, 3–4 weaknesses, overall residual risk, and alignment with B-13’s three outcomes.
+      Summarize the FRFI’s overall technology and cyber posture. 
+      Highlight 3–4 key strengths, 3–4 material weaknesses, overall residual risk posture, and how the FRFI aligns with B-13’s three outcome areas.
 
   - id: governance
     name: Governance & Risk Management
     position: 2
     default_prompt: |
-      Assess (~400 words) governance structures, senior accountability, and the Technology & Cyber Risk Framework. 
-      Cover risk appetite, organizational structure, strategy alignment, and RMF maturity (Principles 1-3). 
-      Note gaps in accountability, oversight, or reporting.
+      Evaluate governance structures, senior ownership, and the technology and cyber risk framework. 
+      Include risk appetite alignment, board visibility, and continuous improvement feedback loops. 
+      Reference B-13 Principles 1–3 and identify accountability or oversight gaps.
 
-  - id: architecture
-    name: Technology Architecture & Asset Management
+  - id: architecture_assets
+    name: Architecture & Asset Management
     position: 3
     default_prompt: |
-      Evaluate (~350–400 words) technology architecture, asset inventory, and lifecycle management (Principles 4-5). 
-      Include asset classification, configuration management, and technology currency. 
-      Identify maturity and operational risks from outdated or untracked assets.
+      Assess architectural governance and asset inventory completeness. 
+      Address asset classification, lifecycle tracking, and currency of hardware/software. 
+      Tie to Principles 4–5 and flag any unmanaged shadow IT or outdated systems.
 
-  - id: sdlc_change
+  - id: sdlc_change_patch
     name: SDLC, Change & Patch Management
     position: 4
     default_prompt: |
-      Review (~400 words) the System Development Life Cycle (Principles 6-7), change/release (Principle 8), and patch processes (Principle 9). 
-      Examine secure-by-design practices, segregation of duties, and timeliness of patching. 
-      Rate maturity and note systemic weaknesses.
+      Review whether secure development, change controls, and patching practices meet Principle 6–9 expectations. 
+      Include segregation of duties, secure-by-design, timely vulnerability remediation, and emergency change processes.
 
-  - id: incident_ops
-    name: Incident, Problem & Service Management
+  - id: incidents_services
+    name: Incident, Service & Problem Management
     position: 5
     default_prompt: |
-      Assess (~350–400 words) incident/problem management and technology service monitoring (Principles 10-11). 
-      Evaluate incident logging, escalation, post-incident review, and capacity/performance tracking. 
-      Reference evidence of testing and lessons-learned processes.
+      Evaluate logging, alerting, escalation, post-incident review, and service capacity monitoring. 
+      Reference Principles 10–11 and assess whether recovery actions and lessons learned are embedded operationally.
 
   - id: disaster_recovery
-    name: Disaster Recovery & Operational Resilience
+    name: Disaster Recovery & Resilience Testing
     position: 6
     default_prompt: |
-      Evaluate (~400 words) disaster recovery and scenario testing (Principles 12-13). 
-      Assess alignment of DR programs with BCP, recovery time objectives, testing cadence, and dependency management. 
-      Provide residual risk rating and improvement recommendations.
+      Examine Enterprise Disaster Recovery Program scope, testing coverage, backup strategies, and third-party recovery dependencies. 
+      Refer to Principles 12–13. Provide evidence of RTO/RPO targets and DR test findings.
 
   - id: cyber_identify
-    name: Cyber Security – Identify
+    name: Cyber – Identify & Threat Awareness
     position: 7
     default_prompt: |
-      Assess (~350–400 words) cyber threat identification and situational awareness (Principle 14). 
-      Include vulnerability scanning, intelligence-led testing, data classification, and threat modeling. 
-      Note maturity of continuous monitoring and awareness programs.
+      Assess how the FRFI identifies internal and external threats through scanning, threat intel, data classification, and red/blue testing. 
+      Reference Principle 14 and highlight gaps in threat modeling or awareness.
 
   - id: cyber_defend
-    name: Cyber Security – Defend
+    name: Cyber – Preventive Controls
     position: 8
     default_prompt: |
-      Evaluate (~400 words) preventive controls (Principle 15). 
-      Cover secure-by-design, cryptography, layered defenses, data protection, IAM, and configuration baselines. 
-      Identify any lagging remediation or control gaps.
+      Review security architecture, IAM, configuration baselines, DLP, and encryption measures per Principle 15. 
+      Highlight secure-by-design adoption and MFA/privileged access enforcement maturity.
 
   - id: cyber_detect
-    name: Cyber Security – Detect
+    name: Cyber – Detection & Monitoring
     position: 9
     default_prompt: |
-      Review (~350–400 words) detection capabilities (Principle 16). 
-      Assess centralized logging, SIEM effectiveness, anomaly detection, and triage processes. 
-      Provide maturity rating and evidence-based observations.
+      Evaluate monitoring controls, log management, SIEM coverage, and triage effectiveness. 
+      Reference Principle 16 and note latency or behavioral detection capability gaps.
 
-  - id: cyber_respond
-    name: Cyber Security – Respond & Recover
+  - id: cyber_response
+    name: Cyber – Response, Recovery & Forensics
     position: 10
     default_prompt: |
-      Assess (~400 words) response and recovery capabilities (Principle 17). 
-      Include incident playbooks, containment tools, forensic readiness, root-cause analysis, and lessons learned. 
-      Evaluate integration with crisis and communication frameworks.
+      Assess incident response readiness including playbooks, forensic tooling, containment strategies, and RCA depth. 
+      Link to Principle 17 and evaluate coordination with DR and crisis teams.
 
   - id: risks
-    name: Key Risks & Gaps
+    name: Residual Risks & Thematic Gaps
     position: 11
     default_prompt: |
-      Summarize (~350–400 words) critical residual risks across governance, technology operations, and cyber domains. 
-      Categorize High/Medium/Low, reference B-13 principles, and outline potential regulatory or operational impacts.
+      Consolidate top risks across governance, ops, and cyber domains. 
+      Classify by High/Medium/Low, reference violated B-13 principles, and cite systemic issues where applicable.
 
-  - id: recs
-    name: Recommendations & Roadmap
+  - id: recommendations
+    name: Recommendations
     position: 12
     default_prompt: |
-      Provide (~400 words) prioritized actions to close identified gaps. 
-      Include responsible function, priority (H/M/L), and 30/60/90-day timelines. 
-      Ensure recommendations align with OSFI B-13 outcomes and proportionality principles.
+      Provide detailed recommendations: issue, action, owner, and 30/60/90-day prioritization. 
+      Tie back to specific principles and emphasize expected reduction in residual risk.
 
   - id: conclusion
     name: Conclusion
     position: 13
     default_prompt: |
-      Conclude (~300–350 words) with overall technology and cyber resilience rating, readiness for OSFI review, 
-      and recommended reassessment cycle (12–18 months). Keep tone formal and regulator-focused.
+      Conclude with OSFI-readiness summary, outstanding risks, and suggested reassessment cadence (e.g., annually or every 18 months).

@@ -9,7 +9,6 @@ overarching: |
 
   STYLE & OUTPUT
   - Professional, concise, and evidence-based.
-  - Around 350–400 words per section.
   - Use structured paragraphs and bullet points.
   - Avoid introductions, conclusions, or filler beyond the requested section.
   - Each finding must reference supplied evidence; if none, state “Not evidenced.”
@@ -24,91 +23,98 @@ overarching: |
   5. Business continuity and exit plans must ensure resilience.
   6. Monitoring, reporting, and incident escalation must align with OSFI expectations.
 
-
 sections:
   - id: exec_summary
     name: Executive Summary
     position: 1
     default_prompt: |
-      Provide (~400 words) summarizing the FRFI’s third-party risk posture. 
-      Highlight top 3–4 strengths, top 3–4 weaknesses, overall residual risk level, 
-      and readiness against OSFI’s six outcomes.
+      Summarize the FRFI’s posture across OSFI B-10’s six outcomes. Highlight 3–4 key control strengths, 
+      3–4 material gaps, and the overall residual risk exposure. Include B-10 alignment and accountability themes.
 
   - id: governance
     name: Governance & Accountability
     position: 2
     default_prompt: |
-      Assess (~400 words) the governance framework for third-party risk. 
-      Include board/senior management oversight, accountability structures, and risk appetite alignment. 
-      Reference the existence and quality of a Third-Party Risk Management Framework (TPRMF).
+      Evaluate how senior management and board structures oversee third-party risk. 
+      Include ownership, risk appetite alignment, escalation, and whether the FRFI retains 
+      end-to-end accountability for critical third-party services.
 
-  - id: framework
+  - id: tprmf
     name: Third-Party Risk Management Framework (TPRMF)
     position: 3
     default_prompt: |
-      Evaluate (~400 words) whether the FRFI maintains an enterprise-wide TPRMF covering the full lifecycle 
-      (sourcing, due diligence, contracting, monitoring, exit). Identify maturity, coverage gaps, and update cadence.
+      Assess whether a documented, enterprise-wide TPRMF exists. Evaluate its coverage of the 
+      full lifecycle: onboarding, due diligence, contracting, performance monitoring, and exit. 
+      Comment on evidence of review frequency and integration with enterprise risk frameworks.
 
   - id: risk_assessment
     name: Risk Identification & Assessment
     position: 4
     default_prompt: |
-      Assess (~350–400 words) how risks and criticality of third-party arrangements are identified and updated. 
-      Include due diligence, concentration risk, subcontracting risk, and ongoing reassessment frequency.
+      Assess how the FRFI determines criticality and inherent risk across its third-party population. 
+      Cover due diligence procedures, ongoing reassessment cadence, subcontracting visibility, and 
+      concentration risk management. Identify maturity and residual exposure.
 
   - id: contracting
     name: Contracting & Legal Controls
     position: 5
     default_prompt: |
-      Evaluate (~350–400 words) written agreements for high-risk/critical arrangements. 
-      Review provisions for scope, performance, roles, data ownership, dispute resolution, and audit rights. 
-      Highlight alignment to OSFI Annex 2 provisions.
+      Examine contract strength for high-risk or critical third-party relationships. Evaluate coverage 
+      for performance, audit, breach notification, dispute handling, regulatory access, and exit clauses. 
+      Reference alignment to OSFI B-10 Annex 2.
 
   - id: data_security
-    name: Data Security, Records & Confidentiality
+    name: Data Security & Record Management
     position: 6
     default_prompt: |
-      Assess (~350 words) how data confidentiality, integrity, and availability are managed under third-party contracts. 
-      Include data location controls, access restrictions, encryption, and OSFI record-keeping expectations.
+      Assess how the FRFI enforces data governance obligations on third parties. Include controls over 
+      data residency, segregation, encryption, breach response, and record retention as required under 
+      the Bank Act and OSFI expectations.
 
-  - id: continuity
+  - id: continuity_exit
     name: Business Continuity & Exit Planning
     position: 7
     default_prompt: |
-      Review (~350–400 words) the FRFI’s ability to continue critical operations during disruptions. 
-      Assess third-party continuity testing, redundancy, exit strategies, and contingency playbooks.
+      Evaluate the robustness of third-party continuity and exit plans. Identify evidence of 
+      tabletop testing, dual-provider strategies, redundancy, and stressed exit playbooks. 
+      Comment on alignment to criticality level and systemic exposure.
 
   - id: monitoring
-    name: Monitoring, Reporting & Incident Management
+    name: Monitoring, Incident Response & Escalation
     position: 8
     default_prompt: |
-      Evaluate (~400 words) oversight of third-party performance, incident management, and escalation processes. 
-      Include monitoring cadence, risk metrics, and alignment with OSFI incident-reporting advisory.
+      Assess how the FRFI monitors service-level performance and third-party risk changes. 
+      Include metrics, thresholds, escalation pathways, and incident management practices. 
+      Reference alignment to OSFI’s Cyber Incident Advisory expectations.
 
   - id: technology
-    name: Technology & Cyber Risk in Third-Party Arrangements
+    name: Technology & Cyber Controls in Third-Party Arrangements
     position: 9
     default_prompt: |
-      Assess (~400 words) technology and cyber risk controls applied to third parties. 
-      Include alignment with OSFI B-13, cloud governance, access management, and data portability expectations.
+      Evaluate how third parties are governed from a technology and cyber risk standpoint. 
+      Cover access management, security baselines, cloud portability, and compliance with OSFI B-13. 
+      Include any gaps in control enforcement or monitoring.
 
   - id: risks
-    name: Key Residual Risks & Observations
+    name: Residual Risks & Observations
     position: 10
     default_prompt: |
-      Summarize (~350–400 words) the top residual risks, systemic exposures, and control weaknesses. 
-      Classify as High/Medium/Low and note operational or reputational impact.
+      List key residual risks across the third-party ecosystem. Categorize risks (High, Medium, Low) by 
+      impact domain: operational, reputational, regulatory, or systemic. Tie all conclusions to evidence 
+      and risk appetite deviation.
 
   - id: recs
     name: Recommendations & Remediation Plan
     position: 11
     default_prompt: |
-      Provide (~400 words) prioritized recommendations to address identified weaknesses. 
-      Include action owner, expected outcome, and timeframe (30/60/90 days).
+      Propose prioritized actions for control gaps. For each: name the issue, action required, 
+      responsible role, and remediation horizon (30/60/90 days). Include commentary on expected 
+      reduction in residual risk.
 
   - id: conclusion
     name: Conclusion
     position: 12
     default_prompt: |
-      Conclude (~300–350 words) with the FRFI’s readiness, residual third-party risk level, 
-      and suggested frequency of reassessment or OSFI review (e.g., annually or biannually).
+      Conclude with the FRFI’s current readiness to meet B-10 supervisory expectations. State 
+      overall residual risk posture and proposed reassessment interval (e.g., annual, biannual). 
+      Do not restate previous findings.

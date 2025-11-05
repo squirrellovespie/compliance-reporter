@@ -18,15 +18,17 @@ export default function Run() {
 
   const [retrieval, setRetrieval] = useState<"cosine" | "mmr" | "hybrid">("cosine");
 
+  // NEW: provider/model selection
+  const [provider, setProvider] = useState<"openai" | "xai">("xai");
+  const [model, setModel] = useState<string>("grok-4-latest");
+
   useEffect(() => {
     (async () => {
       const data = await listSections(framework);
       setSections(data.sections);
-      setSelected(data.sections.map((s: Section) => s.id)); // select all by default
+      setSelected(data.sections.map((s: Section) => s.id));
       setOverarching(data.overarching_prompt || "");
-      setOverrides(
-        Object.fromEntries(data.sections.map((s: Section) => [s.id, s.default_prompt || ""]))
-      );
+      setOverrides(Object.fromEntries(data.sections.map((s: Section) => [s.id, s.default_prompt || ""])));
       setRunId("");
       setRagDebug(null);
     })();
@@ -44,21 +46,19 @@ export default function Run() {
         prompt_overrides: overrides,
         overarching_prompt: overarching,
         include_rag_debug: includeDebug,
-        retrieval_strategy: retrieval, // <-- pass to backend
+        retrieval_strategy: retrieval,
+        provider,
+        model,
       });
       setRunId(res.run_id);
 
-      // Prefer inline RAG debug, fall back to fetching the run
       const inline = res?.result?.rag_debug;
-      if (inline) {
-        setRagDebug(inline);
-      } else if (includeDebug) {
+      if (inline) setRagDebug(inline);
+      else if (includeDebug) {
         try {
           const dbg = await getRagDebug(res.run_id);
           setRagDebug(dbg);
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       }
     } catch (e: any) {
       alert(`Run failed: ${e.message || e}`);
@@ -81,7 +81,25 @@ export default function Run() {
         <label>Firm</label>
         <input value={firm} onChange={(e) => setFirm(e.target.value)} />
 
-        {/* NEW: retrieval strategy */}
+        <label>Provider</label>
+        <select value={provider} onChange={(e) => {
+          const p = e.target.value as "openai" | "xai";
+          setProvider(p);
+          if (p === "xai") setModel("grok-4-latest");
+          if (p === "openai") setModel("gpt-4o-mini");
+        }}>
+          <option value="xai">xAI (Grok)</option>
+          <option value="openai">OpenAI</option>
+        </select>
+
+        <label>Model</label>
+        <input
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder={provider === "xai" ? "grok-4-latest" : "gpt-4o-mini"}
+          style={{ width: 180 }}
+        />
+
         <label>Retrieval</label>
         <select value={retrieval} onChange={(e) => setRetrieval(e.target.value as any)}>
           <option value="cosine">Cosine (nearest neighbors)</option>
@@ -113,18 +131,13 @@ export default function Run() {
       <div>
         <h3>Sections</h3>
         {sections.map((s) => (
-          <div
-            key={s.id}
-            style={{ border: "1px solid #ddd", borderRadius: 8, padding: 10, marginBottom: 8 }}
-          >
+          <div key={s.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 10, marginBottom: 8 }}>
             <label>
               <input
                 type="checkbox"
                 checked={selected.includes(s.id)}
                 onChange={(e) => {
-                  setSelected((prev) =>
-                    e.target.checked ? [...prev, s.id] : prev.filter((x) => x !== s.id)
-                  );
+                  setSelected((prev) => e.target.checked ? [...prev, s.id] : prev.filter((x) => x !== s.id));
                 }}
               />
               &nbsp;{s.name} (pos {s.position})
@@ -135,9 +148,7 @@ export default function Run() {
                 rows={3}
                 style={{ width: "100%" }}
                 value={overrides[s.id] ?? ""}
-                onChange={(e) =>
-                  setOverrides((prev) => ({ ...prev, [s.id]: e.target.value }))
-                }
+                onChange={(e) => setOverrides((prev) => ({ ...prev, [s.id]: e.target.value }))}
               />
             </div>
           </div>
@@ -163,68 +174,29 @@ export default function Run() {
                 .map((s) => {
                   const rows = ragDebug[s.id] || [];
                   return (
-                    <div
-                      key={s.id}
-                      style={{
-                        border: "1px solid #eee",
-                        borderRadius: 8,
-                        padding: 10,
-                        marginTop: 10,
-                      }}
-                    >
+                    <div key={s.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 10, marginTop: 10 }}>
                       <div style={{ fontWeight: 600, marginBottom: 6 }}>{s.name}</div>
                       {rows.length === 0 ? (
-                        <div style={{ fontStyle: "italic", opacity: 0.8 }}>
-                          No chunks captured.
-                        </div>
+                        <div style={{ fontStyle: "italic", opacity: 0.8 }}>No chunks captured.</div>
                       ) : (
                         <div style={{ overflowX: "auto" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse" }}>
                             <thead>
                               <tr>
-                                <th
-                                  style={{
-                                    textAlign: "left",
-                                    borderBottom: "1px solid #ddd",
-                                    padding: "6px 4px",
-                                  }}
-                                >
+                                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "6px 4px" }}>
                                   Source
                                 </th>
-                                <th
-                                  style={{
-                                    textAlign: "left",
-                                    borderBottom: "1px solid #ddd",
-                                    padding: "6px 4px",
-                                  }}
-                                >
+                                <th style={{ textAlign: "left", borderBottom: "1px solid " +
+                                  " #ddd", padding: "6px 4px" }}>
                                   Doc
                                 </th>
-                                <th
-                                  style={{
-                                    textAlign: "left",
-                                    borderBottom: "1px solid #ddd",
-                                    padding: "6px 4px",
-                                  }}
-                                >
+                                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "6px 4px" }}>
                                   Page
                                 </th>
-                                <th
-                                  style={{
-                                    textAlign: "left",
-                                    borderBottom: "1px solid #ddd",
-                                    padding: "6px 4px",
-                                  }}
-                                >
+                                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "6px 4px" }}>
                                   Score
                                 </th>
-                                <th
-                                  style={{
-                                    textAlign: "left",
-                                    borderBottom: "1px solid #ddd",
-                                    padding: "6px 4px",
-                                  }}
-                                >
+                                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "6px 4px" }}>
                                   Preview
                                 </th>
                               </tr>
@@ -232,25 +204,13 @@ export default function Run() {
                             <tbody>
                               {rows.map((r, i) => (
                                 <tr key={i}>
-                                  <td style={{ verticalAlign: "top", padding: "6px 4px" }}>
-                                    {r.source ?? "fw"}
-                                  </td>
-                                  <td style={{ verticalAlign: "top", padding: "6px 4px" }}>
-                                    {r.doc_id}
-                                  </td>
-                                  <td style={{ verticalAlign: "top", padding: "6px 4px" }}>
-                                    {r.page}
-                                  </td>
+                                  <td style={{ verticalAlign: "top", padding: "6px 4px" }}>{r.source ?? "fw"}</td>
+                                  <td style={{ verticalAlign: "top", padding: "6px 4px" }}>{r.doc_id}</td>
+                                  <td style={{ verticalAlign: "top", padding: "6px 4px" }}>{r.page}</td>
                                   <td style={{ verticalAlign: "top", padding: "6px 4px" }}>
                                     {r.score == null ? "—" : r.score.toFixed(3)}
                                   </td>
-                                  <td
-                                    style={{
-                                      verticalAlign: "top",
-                                      padding: "6px 4px",
-                                      whiteSpace: "normal",
-                                    }}
-                                  >
+                                  <td style={{ verticalAlign: "top", padding: "6px 4px", whiteSpace: "normal" }}>
                                     {r.preview}
                                   </td>
                                 </tr>

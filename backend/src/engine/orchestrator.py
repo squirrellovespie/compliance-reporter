@@ -7,7 +7,7 @@ import os, json
 from assessors.registry import get_assessor
 from assessors.base import BuildContext, BaseFrameworkAssessor
 
-from services.openai_client import chat_complete
+from services.ai_client import chat_complete
 from services.vector_langchain import query as vs_query
 
 RUNS_DIR = Path(os.getenv("RUNS_PATH", "./src/data/runs")).resolve()
@@ -38,20 +38,35 @@ class RollingMemory:
             )
         return "\n\n".join(parts)
 
-def _summarize_text_for_memory(text: str) -> Dict[str, Any]:
+def _summarize_text_for_memory(
+    text: str,
+    *,
+    provider: str,
+    model: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Summarize section to compact memory: {narrative, bullets[]}.
+    For xAI we avoid response_format and enforce JSON via prompt instructions.
+    """
     prompt = (
         "Summarize the following section into: "
         "1) one 150–250 token narrative paragraph (no new facts), and "
         "2) 5–7 concise bullets. "
-        "Return JSON with keys: narrative, bullets (array of strings)."
+        "Return ONLY valid JSON with keys: narrative (string), bullets (array of strings)."
     )
     messages = [
-        {"role": "system", "content": "You are a precise summarizer for an audit report."},
+        {"role": "system", "content": "You are a precise summarizer for an audit report. Return only JSON."},
         {"role": "user", "content": prompt + "\n\n---\n" + text.strip()},
     ]
-    out = chat_complete(messages=messages, response_format="json_object", temperature=0.2, max_tokens=600)
+    # Use JSON mode only for OpenAI; for xAI we rely on prompt
+    resp = chat_complete(
+        provider=provider, model=model,
+        messages=messages,
+        response_format=("json_object" if provider == "openai" else None),
+        temperature=0.2, max_tokens=600
+    )
     try:
-        return json.loads(out)
+        return json.loads(resp)
     except Exception:
         return {"narrative": "", "bullets": []}
 
@@ -60,27 +75,12 @@ def _retrieve_chunks(
     firm: str,
     query_text: str,
     used_ev: Set[Tuple[str,int]],
-    k: int = RETRIEVE_K,
-    *,
-    retrieval_strategy: str = "cosine",   # NEW
+    k: int = REVEAL_K if (REVEAL_K:=RETRIEVE_K) else RETRIEVE_K,
 ) -> List[Dict[str, Any]]:
-    """
-    Pull from:
-      - fw_<framework>
-      - assessment_<firm>
-      - evidence_<firm>
-    Respect retrieval_strategy: "cosine" | "mmr" | "hybrid"
-    """
-    pool: List[Dict[str, Any]] = []
-
+    pool = []
     def _pull(collection: str, source_label: str):
         try:
-            rows = vs_query(
-                collection_name=collection,
-                text=query_text,
-                k=k*2,
-                strategy=retrieval_strategy,  # NEW
-            ) or []
+            rows = vs_query(collection_name=collection, text=query_text, k=k*2) or []
             for r in rows:
                 m = r.get("metadata", {}) or {}
                 doc_id = m.get("doc_id") or m.get("source_pdf") or source_label
@@ -94,9 +94,9 @@ def _retrieve_chunks(
         except Exception:
             pass
 
-    _pull(f"fw_{framework}",    f"fw_{framework}")
-    _pull(f"assessment_{firm}", f"assessment_{firm}")
-    _pull(f"evidence_{firm}",   f"evidence_{firm}")
+    _pull(f"fw_{framework}",        f"fw_{framework}")
+    _pull(f"assessment_{firm}",     f"assessment_{firm}")
+    _pull(f"evidence_{firm}",       f"evidence_{firm}")
 
     seen = set()
     fresh, dups = [], []
@@ -108,16 +108,12 @@ def _retrieve_chunks(
         if key_all in seen:
             continue
         seen.add(key_all)
-
-        key_used = (doc_id, page)
-        (fresh if key_used not in used_ev else dups).append(r)
+        ((fresh if (doc_id, page) not in used_ev else dups)).append(r)
 
     def _score(row):
         s = row.get("score")
-        try:
-            return float(s) if s is not None else -1e9
-        except Exception:
-            return -1e9
+        try: return float(s) if s is not None else -1e9
+        except: return -1e9
 
     fresh.sort(key=_score, reverse=True)
     dups.sort(key=_score, reverse=True)
@@ -129,6 +125,8 @@ def _retrieve_chunks(
 
 def _render_section_llm(
     *,
+    provider: str,
+    model: Optional[str],
     framework: str,
     section_id: str,
     section_name: str,
@@ -137,16 +135,11 @@ def _render_section_llm(
     memory: RollingMemory,
     firm: str,
     scope: Optional[str],
-    retrieval_strategy: str = "cosine",  # NEW
 ) -> Dict[str, Any]:
     retrieval_query = f"{section_name}: {section_prompt}\nFirm: {firm}\nScope: {scope or 'full'}"
     chunks = _retrieve_chunks(
-        framework=framework,
-        firm=firm,
-        query_text=retrieval_query,
-        used_ev=memory.used_evidence,
-        k=RETRIEVE_K,
-        retrieval_strategy=retrieval_strategy,  # NEW
+        framework=framework, firm=firm, query_text=retrieval_query,
+        used_ev=memory.used_evidence, k=RETRIEVE_K
     )
 
     ev_lines: List[str] = []
@@ -160,7 +153,6 @@ def _render_section_llm(
         text   = c["text"]
         score  = c.get("score")
         source = c.get("source")
-
         ev_lines.append(f"[{doc_id} p.{page}] {text[:800]}")
         new_used.add((doc_id, page))
         rag_debug.append({
@@ -183,14 +175,17 @@ def _render_section_llm(
         + "\n---\n".join(ev_lines)
     )
     text = chat_complete(
+        provider=provider, model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.3,
-        max_tokens=1100,
+        temperature=0.3, max_tokens=1100,
+        response_format=None  # narrative text; no JSON required
     )
     return {"text": text, "used": new_used, "rag_debug": rag_debug, "section_id": section_id}
 
 def generate_report_sections(
     *,
+    provider: str,
+    model: Optional[str],
     framework: str,
     firm: str,
     sections_ordered: List[Dict[str, Any]],
@@ -198,8 +193,7 @@ def generate_report_sections(
     scope: Optional[str],
     prompt_overrides: Dict[str, str],
     include_rag_debug: bool = False,
-    retrieval_strategy: str = "cosine",   # NEW
-) -> Tuple[Dict[str, str], Optional[Dict[str, List[Dict[str, Any]]]]]:
+) -> tuple[Dict[str, str], Optional[Dict[str, List[Dict[str, Any]]]]]:
     memory = RollingMemory()
     out_text: Dict[str, str] = {}
     rag_debug_map: Dict[str, List[Dict[str, Any]]] = {}
@@ -209,7 +203,11 @@ def generate_report_sections(
         {"role": "user", "content": "Create a 1-level outline for the following sections in order:\n" +
                                     "\n".join(f"- {s['name']}" for s in sections_ordered)}
     ]
-    outline = chat_complete(messages=outline_msg, temperature=0.2, max_tokens=250)
+    outline = chat_complete(
+        provider=provider, model=model,
+        messages=outline_msg, temperature=0.2, max_tokens=250,
+        response_format=None
+    )
     memory.points = [ln.strip("- ").strip() for ln in outline.split("\n") if ln.strip()][:MEM_POINTS_LIMIT]
 
     for s in sections_ordered:
@@ -218,25 +216,20 @@ def generate_report_sections(
         sec_prompt = (prompt_overrides.get(s["id"]) or s.get("default_prompt") or "").strip()
 
         sec = _render_section_llm(
+            provider=provider, model=model,
             framework=framework,
-            section_id=sec_id,
-            section_name=sec_name,
-            section_prompt=sec_prompt,
-            overarching_prompt=overarching_prompt,
-            memory=memory,
-            firm=firm,
-            scope=scope,
-            retrieval_strategy=retrieval_strategy,  # NEW
+            section_id=sec_id, section_name=sec_name,
+            section_prompt=sec_prompt, overarching_prompt=overarching_prompt,
+            memory=memory, firm=firm, scope=scope,
         )
         text: str = sec["text"]
         out_text[sec_name] = text
-
         if include_rag_debug:
             rag_debug_map[sec_id] = sec["rag_debug"]
 
-        summ = _summarize_text_for_memory(text)
+        summ = _summarize_text_for_memory(text, provider=provider, model=model)
         combined = (memory.narrative_summary + "\n" + (summ.get("narrative") or "")).strip()
-        re_summ = _summarize_text_for_memory(combined)
+        re_summ = _summarize_text_for_memory(combined, provider=provider, model=model)
         memory.narrative_summary = (re_summ.get("narrative") or "")[:MEM_SUMMARY_TOKENS * 6]
         memory.points = list(dict.fromkeys(memory.points + (summ.get("bullets") or [])))[:MEM_POINTS_LIMIT]
         memory.used_evidence |= set(sec["used"])
@@ -248,11 +241,12 @@ def run_report(
     firm: str,
     scope: Optional[str],
     *,
+    provider: str,
+    model: Optional[str],
     selected_sections: List[Dict[str, Any]],
     prompt_overrides: Dict[str, str],
     overarching_prompt: str,
     include_rag_debug: bool = False,
-    retrieval_strategy: str = "cosine",  # NEW
 ) -> Dict[str, Any]:
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
@@ -260,18 +254,16 @@ def run_report(
     findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
 
     sections_text, rag_debug = generate_report_sections(
-        framework=framework,
-        firm=firm,
+        provider=provider, model=model,
+        framework=framework, firm=firm,
         sections_ordered=selected_sections,
         overarching_prompt=overarching_prompt or "",
-        scope=scope,
-        prompt_overrides=prompt_overrides or {},
+        scope=scope, prompt_overrides=prompt_overrides or {},
         include_rag_debug=include_rag_debug,
-        retrieval_strategy=retrieval_strategy,  # NEW
     )
 
     run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
-    out = {
+    out: Dict[str, Any] = {
         "run_id": run_id,
         "framework": framework,
         "firm": firm,

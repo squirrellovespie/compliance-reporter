@@ -10,12 +10,12 @@ overarching: |
 
   STYLE & OUTPUT
   - Professional, concise, and evidence-driven.
-  - Around 350–400 words per section.
-  - Use clear subheadings and bullet points for readability.
-  - Avoid introductions, conclusions, or repetition.
-  - Tie all findings to supplied evidence; if absent, state “Not evidenced.”
-  - Each finding must reference: maturity (1–5 or Low/Med/High), risk level, and OCC/NIST-CSF mapping.
-  - Highlight where practices meet, exceed, or fall short of OCC supervisory expectations.
+  - Use structured paragraphs and bullet points where appropriate.
+  - Do not include section headings, word counts, or tables.
+  - Do not repeat content or summarize other sections.
+  - Findings must be based on supplied evidence; if missing, state “Not evidenced.”
+  - Each finding should include: maturity rating (1–5 or Low/Med/High), risk level, and mapping to OCC/NIST-CSF functions.
+  - Use OCC examiner tone — factual, concise, supervision-focused.
 
   OCC PRINCIPLES
   1. Structure output under NIST-CSF functions: Identify, Protect, Detect, Respond, Recover.
@@ -31,77 +31,58 @@ sections:
     name: Executive Summary
     position: 1
     default_prompt: |
-      Provide (~400 words) summarizing the institution’s cybersecurity posture 
-      across the five NIST-CSF functions. Highlight top 3–4 strengths, top 3–4 weaknesses, 
-      and overall risk rating. Reference OCC supervisory tone and regulatory context.
+      Provide an executive summary of the institution’s cybersecurity posture under OCC’s CSW structure. Highlight top strengths and key weaknesses using supervision-ready tone. All assessments should trace back to evidence provided in functional sections and clearly reference OCC expectations where applicable.
 
   - id: identify
     name: Identify – Governance, Risk & Asset Management
     position: 2
     default_prompt: |
-      Assess (~400 words) how the bank identifies and manages cybersecurity risk. 
-      Cover asset inventory, governance, business environment, risk assessment, and supply chain risk. 
-      Highlight maturity, OCC alignment, and control gaps.
+      Assess how the institution identifies and understands its cyber risks, including asset management, business role, governance, risk assessments, and third-party dependencies. Refer to documented roles, inventories, diagrams, or absence thereof. Assign maturity and risk level only when evidence is available. Map each topic to applicable NIST-CSF subfunctions (ID.AM through ID.SC).
 
   - id: protect
     name: Protect – Safeguards & Access Controls
     position: 3
     default_prompt: |
-      Evaluate (~400 words) protective controls including access management (MFA, RBAC), 
-      data security, training and awareness, and system hardening. 
-      Include references to encryption, backup, and baseline configurations. 
-      Rate maturity and residual risk.
+      Evaluate safeguards in place including access management, secure configurations, encryption, backups, and user training. Use evidence such as MFA enforcement, role-based access logs, or security awareness data. Identify deficiencies in protection or gaps in technical hardening and configuration controls. Map to PR.* categories in the NIST-CSF.
 
   - id: detect
     name: Detect – Monitoring & Anomaly Detection
     position: 4
     default_prompt: |
-      Assess (~350–400 words) monitoring and detection capabilities. 
-      Include continuous monitoring, anomaly detection, logging, and vulnerability scanning. 
-      Identify control gaps, detection timeliness, and alert thresholds.
+      Review the organization’s ability to detect anomalous activity and emerging threats. Discuss network monitoring, logging, detection thresholds, continuous monitoring, and alert response. State detection maturity and effectiveness using event data or monitoring artifacts when provided. Address timeliness, tuning, and false positives.
 
   - id: respond
     name: Respond – Incident Response & Communication
     position: 5
     default_prompt: |
-      Evaluate (~400 words) incident response processes, communication protocols, 
-      and coordination with stakeholders (FS-ISAC, regulators, vendors). 
-      Include response planning, containment, and post-incident analysis practices.
+      Analyze how the bank responds to incidents and communicates internally and externally. Include incident playbooks, roles, coordination with FS-ISAC and regulators, and post-incident reviews. Reference response logs, drills, or regulatory notifications where available. Identify gaps in escalation, containment, or communication.
 
   - id: recover
     name: Recover – Resilience & Restoration
     position: 6
     default_prompt: |
-      Assess (~350–400 words) recovery and resilience capabilities. 
-      Evaluate BCP/DR planning, restoration testing, and recovery communication. 
-      Highlight alignment to OCC expectations for restoration readiness.
+      Evaluate the bank’s ability to restore systems and services after an event. Address DR/BCP testing, resilience measures, and communication with stakeholders. Trace recovery timelines and maturity ratings only to documented plans or validated tests. Identify weaknesses that would impair service restoration under stress.
 
   - id: specialty
     name: Specialty Area – Secure Software Development
     position: 7
     default_prompt: |
-      Assess (~350 words) the bank’s secure software development lifecycle (SDLC) controls. 
-      Review coding standards, testing environment security, and handling of nonpublic data. 
-      Highlight OCC expectations for secure code management and vulnerability remediation.
+      Assess secure development practices, including SDLC controls, secure coding, test data protection, and vulnerability management. Reference secure build standards, source code access restrictions, and evidence of remediation workflows. Identify gaps in policy enforcement or code quality review.
 
   - id: risks
     name: Key Risks & Gaps
     position: 8
     default_prompt: |
-      Summarize (~350–400 words) critical residual risks identified across all functions. 
-      Categorize them as High, Medium, or Low, referencing regulatory, operational, and reputational impacts.
+      Summarize the highest residual risks across NIST-CSF functions. Clearly classify each as High, Medium, or Low. Each risk must be traceable to a finding or missing control in prior sections. Do not re-describe control findings—highlight the issue, its cause, and consequence concisely.
 
   - id: recs
     name: Recommendations & Remediation Plan
     position: 9
     default_prompt: |
-      Provide (~400 words) prioritized recommendations addressing identified weaknesses. 
-      Include specific corrective actions, responsible roles, and timeframes (30/60/90 days). 
-      Maintain OCC examiner tone.
+      Provide corrective actions for risks and gaps. Each recommendation must be actionable, clearly linked to its root issue, and have a timeframe and responsible function. Avoid vague guidance—be directive, supervisory, and tied to OCC/NIST expectations. State when alignment with federal guidance is required.
 
   - id: conclusion
     name: Conclusion
     position: 10
     default_prompt: |
-      Conclude (~300–350 words) with overall residual risk, regulatory readiness, 
-      and OCC-aligned next steps (e.g., ongoing monitoring, validation, reassessment cycle).
+      Close with a clear regulatory assessment of residual cyber risk and institutional readiness. Recommend a review cycle or next examiner action based on severity. Avoid repeating findings—focus on whether the institution meets OCC cyber supervision expectations and where escalation may be warranted.

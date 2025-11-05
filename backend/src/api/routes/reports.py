@@ -1,7 +1,6 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional
 from pathlib import Path
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -13,7 +12,6 @@ from engine.prompt_store import get_sections, get_overarching
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-
 class RunReportRequest(BaseModel):
     framework: str
     firm: str
@@ -22,11 +20,11 @@ class RunReportRequest(BaseModel):
     prompt_overrides: Dict[str, str] = {}
     overarching_prompt: Optional[str] = ""
     include_rag_debug: bool = False
-    retrieval_strategy: Optional[Literal["cosine", "mmr", "hybrid"]] = "cosine"
-
+    provider: str = "openai"              # <-- NEW
+    model: Optional[str] = None           # <-- NEW
 
 def _resolve_sections(framework: str, selected_ids: List[str]) -> List[Dict[str, Any]]:
-    all_sections = get_sections(framework)  # [{id, name, position, default_prompt}, ...]
+    all_sections = get_sections(framework)
     index = {s["id"]: s for s in all_sections}
     result: List[Dict[str, Any]] = []
     for sid in selected_ids:
@@ -36,20 +34,14 @@ def _resolve_sections(framework: str, selected_ids: List[str]) -> List[Dict[str,
     result.sort(key=lambda s: int(s.get("position", 0)))
     return result
 
-
 @router.get("/sections/{framework}")
 def list_sections(framework: str):
     try:
         sections = get_sections(framework)
         over = get_overarching(framework)
-        return {
-            "framework": framework,
-            "overarching_prompt": over,
-            "sections": sections,
-        }
+        return {"framework": framework, "overarching_prompt": over, "sections": sections}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
-
 
 @router.post("/run")
 def run(req: RunReportRequest):
@@ -58,20 +50,17 @@ def run(req: RunReportRequest):
         overarching = (req.overarching_prompt or "").strip() or get_overarching(req.framework)
 
         result = run_report(
-            req.framework,
-            req.firm,
-            req.scope,
+            req.framework, req.firm, req.scope,
+            provider=req.provider, model=req.model,
             selected_sections=selected_sections,
             prompt_overrides=req.prompt_overrides or {},
             overarching_prompt=overarching,
             include_rag_debug=req.include_rag_debug,
-            retrieval_strategy=req.retrieval_strategy or "cosine",
         )
         return {"run_id": result["run_id"], "result": result}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"/reports/run error: {str(e)}")
-
 
 @router.get("/{run_id}")
 def get_run(run_id: str):
@@ -79,7 +68,6 @@ def get_run(run_id: str):
         return load_run(run_id)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
-
 
 @router.get("/{run_id}/pdf")
 def get_pdf(run_id: str):
@@ -91,3 +79,11 @@ def get_pdf(run_id: str):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"/reports/{run_id}/pdf error: {str(e)}")
+
+@router.get("/{run_id}/rag_debug")
+def get_rag_debug(run_id: str):
+    try:
+        data = load_run(run_id)
+        return data.get("rag_debug", {})
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
