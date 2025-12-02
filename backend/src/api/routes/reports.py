@@ -5,13 +5,14 @@ from pathlib import Path
 import json
 import traceback
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+import httpx
 
 from engine.orchestrator import (
     run_report,
-    run_report_stream,   # <-- NEW: import streamer
+    run_report_stream,   # streamer (yields NDJSON lines)
     load_run,
     RUNS_DIR,
 )
@@ -31,8 +32,11 @@ class RunReportRequest(BaseModel):
     overarching_prompt: Optional[str] = ""
     include_rag_debug: bool = False
     provider: str = "openai"              # e.g., "openai", "xai"
-    model: Optional[str] = None           # e.g., "gpt-4o-mini", "grok-beta"
+    model: Optional[str] = None           # e.g., "gpt-4o-mini", "grok-4-latest"
     retrieval_strategy: Optional[str] = None  # "cosine" | "mmr" | "hybrid"
+
+    # NEW: for webhook mode (Cloudflare-safe)
+    webhook_url: Optional[str] = None     # if set, events are pushed to this URL
 
 
 # ---------- Helpers ----------
@@ -50,6 +54,101 @@ def _resolve_sections(framework: str, selected_ids: List[str]) -> List[Dict[str,
         result.append(index[sid])
     result.sort(key=lambda s: int(s.get("position", 0)))
     return result
+
+
+def _run_stream_to_webhook(
+    req: RunReportRequest,
+    selected_sections: List[Dict[str, Any]],
+    overarching: str,
+) -> None:
+    """
+    Background task used when webhook_url is provided.
+
+    - Consumes run_report_stream(...)
+    - For each event line, POSTs JSON to webhook_url
+      and ensures run_id/framework/firm are always present.
+    - At the end, emits a final { "event": "pdf_ready", "run_id": ... } event.
+    """
+    webhook_url = req.webhook_url
+    if not webhook_url:
+        return
+
+    run_id_seen: Optional[str] = None
+
+    try:
+        stream: Iterable[str] = run_report_stream(
+            framework=req.framework,
+            firm=req.firm,
+            scope=req.scope,
+            selected_sections=selected_sections,
+            prompt_overrides=req.prompt_overrides or {},
+            overarching_prompt=overarching,
+            include_rag_debug=req.include_rag_debug,
+            provider=req.provider,
+            model=req.model,
+            retrieval_strategy=req.retrieval_strategy,
+        )
+
+        with httpx.Client(timeout=10.0) as client:
+            for line in stream:
+                line = (line or "").strip()
+                if not line:
+                    continue
+
+                try:
+                    evt = json.loads(line)
+                except Exception:
+                    # if the line isn't valid JSON, just log and skip
+                    print(f"[run_stream_to_webhook] Failed to parse line: {line!r}")
+                    continue
+
+                if evt.get("run_id"):
+                    run_id_seen = evt["run_id"]
+
+                payload = {
+                    **evt,
+                    "run_id": evt.get("run_id") or run_id_seen,
+                    "framework": req.framework,
+                    "firm": req.firm,
+                }
+
+                try:
+                    client.post(webhook_url, json=payload)
+                except Exception as post_err:
+                    print(f"[run_stream_to_webhook] Webhook POST error: {post_err}")
+
+            # Final notification: tell consumer that PDF is ready to be downloaded
+            # via GET /reports/{run_id}/pdf
+            if run_id_seen:
+                try:
+                    final_payload = {
+                        "event": "pdf_ready",
+                        "run_id": run_id_seen,
+                        "framework": req.framework,
+                        "firm": req.firm,
+                    }
+                    client.post(webhook_url, json=final_payload)
+                except Exception as send_err:
+                    print(f"[run_stream_to_webhook] Error sending final pdf_ready event: {send_err}")
+
+    except Exception as e:
+        traceback.print_exc()
+        # Best-effort failure notification to the webhook
+        try:
+            if webhook_url:
+                with httpx.Client(timeout=10.0) as client:
+                    client.post(
+                        webhook_url,
+                        json={
+                            "event": "report_failed",
+                            "framework": req.framework,
+                            "firm": req.firm,
+                            "error": str(e),
+                            "run_id": run_id_seen,
+                        },
+                    )
+        except Exception as post_err:
+            print(f"[run_stream_to_webhook] Error sending failure event: {post_err}")
 
 
 # ---------- Routes ----------
@@ -99,17 +198,41 @@ def run(req: RunReportRequest):
 
 
 @router.post("/run_stream")
-def run_stream(req: RunReportRequest):
+def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
     """
-    Streaming (NDJSON) run that yields progress events while the report is generated.
+    Two modes:
 
-    Events (one JSON object per line):
-      {"event":"start","run_id":...,"framework":...,"firm":...}
-      {"event":"section_start","section_id":...,"section_name":...}
-      {"event":"section_text","section_id":...,"section_name":...,"text":...}
-      {"event":"end","run_id":...,"ok":true}
-      {"event":"error","message":"..."}  # on failures
+    1) Local / dev streaming (no webhook_url):
+       - Returns NDJSON StreamingResponse like before
+       - Client reads events line-by-line until completion
+
+    2) Webhook mode (Cloudflare-safe), when webhook_url is provided:
+       - Spawns background task to stream events to webhook_url
+       - Immediately returns a small JSON ack: { "status": "started", "webhook": true }
     """
+    # If a webhook URL is provided, use background webhook mode
+    if req.webhook_url:
+        try:
+            selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
+            overarching = (req.overarching_prompt or "").strip() or get_overarching(req.framework)
+
+            background_tasks.add_task(
+                _run_stream_to_webhook,
+                req,
+                selected_sections,
+                overarching,
+            )
+            return {
+                "status": "started",
+                "webhook": True,
+                "framework": req.framework,
+                "firm": req.firm,
+            }
+        except Exception as e:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"/reports/run_stream webhook error: {str(e)}")
+
+    # Otherwise, keep the original NDJSON streaming behavior
     def _gen():
         try:
             selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
@@ -134,7 +257,6 @@ def run_stream(req: RunReportRequest):
             traceback.print_exc()
             yield json.dumps({"event": "error", "message": str(e)}) + "\n"
 
-    # NDJSON is simple and well-supported by browsers/fetch
     return StreamingResponse(_gen(), media_type="application/x-ndjson")
 
 
