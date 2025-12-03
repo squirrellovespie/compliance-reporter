@@ -35,7 +35,7 @@ class RunReportRequest(BaseModel):
     model: Optional[str] = None           # e.g., "gpt-4o-mini", "grok-4-latest"
     retrieval_strategy: Optional[str] = None  # "cosine" | "mmr" | "hybrid"
 
-    # NEW: for webhook mode (Cloudflare-safe)
+    # For webhook mode (Cloudflare-safe)
     webhook_url: Optional[str] = None     # if set, events are pushed to this URL
 
 
@@ -60,6 +60,7 @@ def _run_stream_to_webhook(
     req: RunReportRequest,
     selected_sections: List[Dict[str, Any]],
     overarching: str,
+    pre_run_id: str,
 ) -> None:
     """
     Background task used when webhook_url is provided.
@@ -73,7 +74,8 @@ def _run_stream_to_webhook(
     if not webhook_url:
         return
 
-    run_id_seen: Optional[str] = None
+    # Seed with pre-generated run_id so every event can be correlated
+    run_id_seen: Optional[str] = pre_run_id
 
     try:
         stream: Iterable[str] = run_report_stream(
@@ -208,8 +210,13 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
 
     2) Webhook mode (Cloudflare-safe), when webhook_url is provided:
        - Spawns background task to stream events to webhook_url
-       - Immediately returns a small JSON ack: { "status": "started", "webhook": true }
+       - Immediately returns a small JSON ack including run_id:
+         { "status": "started", "webhook": true, "run_id": "...", ... }
     """
+    # Pre-generate a run_id for correlation (especially for webhook mode)
+    import uuid
+    pre_run_id = f"{req.framework}-{req.firm}-{uuid.uuid4().hex[:12]}"
+
     # If a webhook URL is provided, use background webhook mode
     if req.webhook_url:
         try:
@@ -221,12 +228,14 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
                 req,
                 selected_sections,
                 overarching,
+                pre_run_id,
             )
             return {
                 "status": "started",
                 "webhook": True,
                 "framework": req.framework,
                 "firm": req.firm,
+                "run_id": pre_run_id,
             }
         except Exception as e:
             traceback.print_exc()
