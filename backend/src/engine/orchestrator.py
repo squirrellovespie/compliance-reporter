@@ -85,7 +85,7 @@ def _retrieve_chunks(
     used_ev: Set[Tuple[str,int]],
     *,
     k: int = RETRIEVE_K,
-    retrieval_strategy: Optional[str] = None,  # "cosine" | "mmr" | "hybrid" (if supported by vector layer)
+    retrieval_strategy: Optional[str] = None,  # "cosine" | "mmr" | "hybrid"
 ) -> List[Dict[str, Any]]:
     """
     Retrieve top-k across multiple collections:
@@ -101,10 +101,14 @@ def _retrieve_chunks(
         try:
             # Ask for more than needed from each pool; we’ll merge -> dedupe -> trim
             try:
-                # If your vector layer supports strategy, pass it.
-                rows = vs_query(collection_name=collection, text=query_text, k=k*2, strategy=retrieval_strategy) or []
+                rows = vs_query(
+                    collection_name=collection,
+                    text=query_text,
+                    k=k*2,
+                    strategy=retrieval_strategy,
+                ) or []
             except TypeError:
-                # Back-compat with older signature
+                # Back-compat with older signature (no strategy)
                 rows = vs_query(collection_name=collection, text=query_text, k=k*2) or []
 
             for r in rows:
@@ -227,7 +231,13 @@ def _render_section_llm(
         temperature=0.3, max_tokens=1100,
         response_format=None  # narrative text; no JSON required
     )
-    return {"text": text, "used": new_used, "rag_debug": rag_debug, "section_id": section_id, "section_name": section_name}
+    return {
+        "text": text,
+        "used": new_used,
+        "rag_debug": rag_debug,
+        "section_id": section_id,
+        "section_name": section_name,
+    }
 
 
 def generate_report_sections(
@@ -236,7 +246,7 @@ def generate_report_sections(
     model: Optional[str],
     framework: str,
     firm: str,
-    sections_ordered: List[Dict[str, Any]],  # [{id,name,position,default_prompt}, ...] (sorted by position)
+    sections_ordered: List[Dict[str, Any]],
     overarching_prompt: str,
     scope: Optional[str],
     prompt_overrides: Dict[str, str],
@@ -363,6 +373,7 @@ def run_report_stream(
     provider: str,
     model: Optional[str],
     retrieval_strategy: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Iterable[str]:
     """
     NDJSON streamer. Yields JSON lines as text events:
@@ -373,12 +384,18 @@ def run_report_stream(
       {"event":"end","run_id":...,"ok":true}
 
     Persists the final run JSON (same format as non-streaming).
+
+    If run_id is provided, it is used for all events and the saved file;
+    otherwise a new one is generated.
     """
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
     findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
 
-    run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
+    # Use incoming run_id (webhook mode) or generate one (normal streaming mode)
+    if run_id is None:
+        run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
+
     yield json.dumps({"event": "start", "run_id": run_id, "framework": framework, "firm": firm}) + "\n"
 
     # Rolling memory + outline
@@ -399,7 +416,12 @@ def run_report_stream(
         sec_name = s["name"]
         sec_prompt = (prompt_overrides.get(s["id"]) or s.get("default_prompt") or "").strip()
 
-        yield json.dumps({"event": "section_start", "section_id": sec_id, "section_name": sec_name}) + "\n"
+        yield json.dumps({
+            "event": "section_start",
+            "run_id": run_id,
+            "section_id": sec_id,
+            "section_name": sec_name,
+        }) + "\n"
 
         sec = _render_section_llm(
             provider=provider, model=model,
@@ -420,7 +442,13 @@ def run_report_stream(
             rag_debug_map[sec_id] = sec["rag_debug"]
 
         # Stream the completed section body
-        yield json.dumps({"event": "section_text", "section_id": sec_id, "section_name": sec_name, "text": text}) + "\n"
+        yield json.dumps({
+            "event": "section_text",
+            "run_id": run_id,
+            "section_id": sec_id,
+            "section_name": sec_name,
+            "text": text,
+        }) + "\n"
 
         # Update rolling memory
         summ = _summarize_text_for_memory(text, provider=provider, model=model)

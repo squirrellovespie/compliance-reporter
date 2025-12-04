@@ -1,9 +1,9 @@
 # backend/src/api/routes/reports.py
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Iterable
-from pathlib import Path
 import json
 import traceback
+import uuid
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
@@ -89,6 +89,7 @@ def _run_stream_to_webhook(
             provider=req.provider,
             model=req.model,
             retrieval_strategy=req.retrieval_strategy,
+            run_id=pre_run_id,
         )
 
         with httpx.Client(timeout=10.0) as client:
@@ -214,7 +215,6 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
          { "status": "started", "webhook": true, "run_id": "...", ... }
     """
     # Pre-generate a run_id for correlation (especially for webhook mode)
-    import uuid
     pre_run_id = f"{req.framework}-{req.firm}-{uuid.uuid4().hex[:12]}"
 
     # If a webhook URL is provided, use background webhook mode
