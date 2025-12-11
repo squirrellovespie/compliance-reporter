@@ -39,6 +39,26 @@ class RunReportRequest(BaseModel):
     webhook_url: Optional[str] = None     # if set, events are pushed to this URL
 
 
+class GeneratePdfRequest(BaseModel):
+    """
+    Used when the frontend has final edited content and just wants a PDF.
+
+    The frontend should send:
+      - framework
+      - firm
+      - optional scope
+      - sections: { "Section Name": "final edited text", ... }
+      - optional findings: any dict; passed straight through to build_pdf
+      - optional run_id: if you want a stable ID; else one is generated
+    """
+    framework: str
+    firm: str
+    scope: Optional[str] = None
+    sections: Dict[str, str]
+    findings: Optional[Dict[str, Any]] = None
+    run_id: Optional[str] = None
+
+
 # ---------- Helpers ----------
 def _resolve_sections(framework: str, selected_ids: List[str]) -> List[Dict[str, Any]]:
     """
@@ -267,6 +287,50 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
             yield json.dumps({"event": "error", "message": str(e)}) + "\n"
 
     return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
+
+@router.post("/render_pdf")
+def render_pdf(req: GeneratePdfRequest):
+    """
+    Given final edited content from the frontend, generate a PDF and return it.
+
+    The structure matches what build_pdf already expects from a run:
+      {
+        "run_id": ...,
+        "framework": ...,
+        "firm": ...,
+        "selected_sections": [...],
+        "sections": { "Section Name": "text", ... },
+        "findings": {...}
+      }
+    """
+    try:
+        run_id = req.run_id or f"{req.framework}-{req.firm}-manual-{uuid.uuid4().hex[:8]}"
+
+        data: Dict[str, Any] = {
+            "run_id": run_id,
+            "framework": req.framework,
+            "firm": req.firm,
+            # Use the dict keys as selected_sections order (frontend can control ordering)
+            "selected_sections": list(req.sections.keys()),
+            "sections": req.sections,
+            "findings": req.findings or {},
+        }
+
+        # Reuse the same RUNS_DIR so everything is consistent
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        out_pdf = RUNS_DIR / f"{run_id}.pdf"
+
+        build_pdf(data, out_pdf)
+
+        return FileResponse(
+            str(out_pdf),
+            media_type="application/pdf",
+            filename=f"{run_id}.pdf",
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"/reports/render_pdf error: {str(e)}")
 
 
 @router.get("/{run_id}")
