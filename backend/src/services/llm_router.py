@@ -69,12 +69,27 @@ def chat_complete(
     """
     Unified chat interface.
     """
-    p = (provider or "openai").lower()
+
+    # ------------------------------------------------------------------
+    # TEMP OVERRIDE: Force OpenAI regardless of provider passed in.
+    # This is the safest "do no harm" change because it preserves:
+    #   - function signature
+    #   - return types
+    #   - OpenAI call path
+    #   - xAI code remains intact (not deleted), just bypassed
+    #
+    # To revert later:
+    #   1) comment out `p = "openai"`
+    #   2) uncomment the original `p = (provider or "openai").lower()`
+    # ------------------------------------------------------------------
+    p = "openai"
+    # p = (provider or "openai").lower()
+    # ------------------------------------------------------------------
 
     if p == "openai":
         if _openai_chat is None:
             raise RuntimeError("OpenAI client unavailable; ensure services/openai_client.py exists")
-        # Your openai_client.chat_complete signature: (messages, response_format, temperature, max_tokens)
+        # Your openai_client.chat_complete signature: (messages, response_format, temperature, max_tokens, model)
         return _openai_chat(
             messages=messages,
             response_format=response_format,
