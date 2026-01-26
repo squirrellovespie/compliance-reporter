@@ -71,7 +71,8 @@ def chat_complete(
     """
     p = (provider or "openai").lower()
 
-    if p == "openai":
+    # if p == "openai":
+    if p in {"xai", "grok", "openai"}:
         if _openai_chat is None:
             raise RuntimeError("OpenAI client unavailable; ensure services/openai_client.py exists")
         # Your openai_client.chat_complete signature: (messages, response_format, temperature, max_tokens)
