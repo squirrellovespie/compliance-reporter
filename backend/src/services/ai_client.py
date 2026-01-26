@@ -120,7 +120,7 @@ def chat_complete(
 
     if provider == "openai" or provider == "xai":
         return _openai_chat_complete(
-            model=model or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+            model="gpt-4o-mini" or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
             messages=messages, temperature=temperature,
             max_tokens=max_tokens, response_format=response_format,
         )
