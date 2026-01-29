@@ -118,18 +118,18 @@ def chat_complete(
     """
     provider = (provider or os.getenv("AI_PROVIDER", "openai")).lower().strip()
 
-    if provider == "openai" or provider == "xai":
+    if provider == "openai":
         return _openai_chat_complete(
-            model="gpt-4o-mini" or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+            model=model or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
             messages=messages, temperature=temperature,
             max_tokens=max_tokens, response_format=response_format,
         )
-    # if provider == "xai":
-    #     # No provider fallback here.
-    #     return _xai_chat_complete(
-    #         model=model or os.getenv("XAI_CHAT_MODEL", "grok-4-latest"),
-    #         messages=messages, temperature=temperature,
-    #         max_tokens=max_tokens, response_format=None,  # ignored
-    #     )
+    
+    if provider == "xai":
+        return _xai_chat_complete(
+            model=model or os.getenv("XAI_CHAT_MODEL", "grok-4-latest"),
+            messages=messages, temperature=temperature,
+            max_tokens=max_tokens, response_format=None,  # ignored
+        )
 
     raise ValueError(f"Unknown provider: {provider}")
