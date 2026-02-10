@@ -296,3 +296,30 @@ def clone_prompts(framework: str, body: Dict[str, Any]):
 
     shutil.copyfile(src, dst)
     return {"status": "ok", "framework": framework, "cloned_from": src_fw}
+
+@router.patch("/{framework}")
+def update_framework_name(framework: str, body: Dict[str, Any]):
+    """
+    Update the framework display name (admin/UI name).
+    This does NOT rename the folder slug.
+    """
+    framework = _validate_slug(framework)
+    _ensure_framework_exists(framework)
+
+    display_name = body.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        raise HTTPException(status_code=400, detail="display_name must be a non-empty string")
+
+    # simplest storage option: write into a catalog file under guidelines/
+    catalog_path = GUIDELINES_DIR / "frameworks.yaml"
+    catalog: Dict[str, Any] = {}
+    if catalog_path.exists():
+        catalog = _load_yaml(catalog_path)
+
+    catalog.setdefault("frameworks", {})
+    catalog["frameworks"].setdefault(framework, {})
+    catalog["frameworks"][framework]["display_name"] = display_name.strip()
+
+    _save_yaml(catalog_path, catalog)
+
+    return {"status": "ok", "framework": framework, "display_name": display_name.strip()}
