@@ -1,0 +1,13 @@
+frameworks:
+  seal:
+    display_name: "SEAL"
+    enabled: true
+  occ:
+    display_name: "OCC"
+    enabled: true
+  osfi_b10:
+    display_name: "OSFI B-10"
+    enabled: true
+  osfi_b13:
+    display_name: "OSFI B-13"
+    enabled: true

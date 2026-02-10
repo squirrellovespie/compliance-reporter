@@ -8,6 +8,7 @@ from .routes.sections import router as sections_router
 from .routes.reports import router as reports_router
 from .routes.sections import router as sections_router
 from .routes.admin_prompts import router as admin_prompts_router
+from api.routes.admin_frameworks import router as admin_frameworks_router
 
 from dotenv import load_dotenv
 
@@ -29,6 +30,7 @@ app.include_router(ingest_router)
 app.include_router(sections_router)
 app.include_router(reports_router)
 app.include_router(admin_prompts_router)
+app.include_router(admin_frameworks_router)
 
 def create_app() -> FastAPI:
     return app
