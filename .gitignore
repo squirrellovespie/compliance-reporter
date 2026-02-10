@@ -36,6 +36,7 @@ dist/
 
 # Reports / PDFs
 *.pdf
+!backend/src/guidelines/**/source/*.pdf
 
 # Coverage / test
 .coverage
