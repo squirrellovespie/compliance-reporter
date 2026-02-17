@@ -323,3 +323,140 @@ def update_framework_name(framework: str, body: Dict[str, Any]):
     _save_yaml(catalog_path, catalog)
 
     return {"status": "ok", "framework": framework, "display_name": display_name.strip()}
+
+@router.delete("/{framework}")
+def delete_framework(framework: str):
+    """
+    Force-delete a framework and all internal references.
+
+    Deletes:
+      - guidelines/<framework>/ (everything under it)
+      - guidelines/frameworks.yaml entry for <framework> (and removes alias references)
+      - vector collections: fw_<framework> (and other common patterns if present)
+
+    Always returns what was deleted (or attempted).
+    """
+    framework = _validate_slug(framework)
+    _ensure_framework_exists(framework)
+
+    deleted: Dict[str, Any] = {
+        "framework": framework,
+        "guidelines_dir_deleted": None,
+        "guidelines_files_deleted": [],
+        "guidelines_dirs_deleted": [],
+        "catalog": {
+            "path": str(GUIDELINES_DIR / "frameworks.yaml"),
+            "entry_deleted": False,
+            "aliases_removed_from_other_entries": [],
+        },
+        "vector_store": {
+            "attempted_collections": [],
+            "deleted_collections": [],
+            "errors": [],
+            "note": "Vector deletion depends on vector_langchain implementation; see attempted/deleted/errors.",
+        },
+        "errors": [],
+    }
+
+    fw_path = _fw_dir(framework)
+
+    # ---- 1) enumerate + delete guidelines/<framework>/ ----
+    try:
+        # snapshot before delete
+        files = [str(p.relative_to(fw_path)) for p in fw_path.rglob("*") if p.is_file()]
+        dirs  = [str(p.relative_to(fw_path)) for p in fw_path.rglob("*") if p.is_dir()]
+
+        deleted["guidelines_files_deleted"] = sorted(files)
+        deleted["guidelines_dirs_deleted"] = sorted(dirs)
+
+        shutil.rmtree(fw_path)
+        deleted["guidelines_dir_deleted"] = str(fw_path)
+
+    except Exception as e:
+        deleted["errors"].append(f"Failed deleting guidelines framework folder: {e}")
+
+    # ---- 2) remove slug + alias references from guidelines/frameworks.yaml ----
+    catalog_path = GUIDELINES_DIR / "frameworks.yaml"
+    try:
+        if catalog_path.exists():
+            catalog = _load_yaml(catalog_path)
+            fw_map = catalog.get("frameworks")
+
+            if isinstance(fw_map, dict):
+                # remove direct entry
+                if framework in fw_map:
+                    fw_map.pop(framework, None)
+                    deleted["catalog"]["entry_deleted"] = True
+
+                # remove aliases references in OTHER entries (if you later add aliasing)
+                # Supports either:
+                #   frameworks:
+                #     x:
+                #       aliases: ["old_slug", ...]
+                # or any string fields containing the slug (best-effort)
+                removed_aliases: List[Dict[str, Any]] = []
+                for slug, meta in fw_map.items():
+                    if not isinstance(meta, dict):
+                        continue
+
+                    # aliases list
+                    aliases = meta.get("aliases")
+                    if isinstance(aliases, list):
+                        before = list(aliases)
+                        after = [a for a in aliases if a != framework]
+                        if after != before:
+                            meta["aliases"] = after
+                            removed_aliases.append({"framework": slug, "removed_from": "aliases", "removed_value": framework})
+
+                    # optional: remove if stored as legacy fields
+                    for k in ("previous_slug", "old_slug"):
+                        if meta.get(k) == framework:
+                            meta.pop(k, None)
+                            removed_aliases.append({"framework": slug, "removed_from": k, "removed_value": framework})
+
+                deleted["catalog"]["aliases_removed_from_other_entries"] = removed_aliases
+                catalog["frameworks"] = fw_map
+                _save_yaml(catalog_path, catalog)
+
+    except Exception as e:
+        deleted["errors"].append(f"Failed updating frameworks.yaml catalog: {e}")
+
+    # ---- 3) delete vector-store collections for this framework ----
+    # Your orchestrator uses fw_<framework> for guidelines retrieval.
+    # We'll attempt to delete at least that. If your vector layer doesn't support delete,
+    # we still return attempted collections.
+    attempted = [f"fw_{framework}"]
+    deleted["vector_store"]["attempted_collections"] = attempted
+
+    try:
+        # Try to call an optional delete function if present in services.vector_langchain
+        # without breaking older installs.
+        from services import vector_langchain as vs  # type: ignore
+
+        # preferred: explicit delete API
+        if hasattr(vs, "delete_collection") and callable(getattr(vs, "delete_collection")):
+            for c in attempted:
+                try:
+                    ok = vs.delete_collection(collection_name=c)  # expected True/False or None
+                    deleted["vector_store"]["deleted_collections"].append({"collection": c, "ok": bool(ok) if ok is not None else True})
+                except Exception as inner:
+                    deleted["vector_store"]["errors"].append({"collection": c, "error": str(inner)})
+
+        # fallback: some implementations expose a "client" with delete_collection
+        elif hasattr(vs, "client") and hasattr(vs.client, "delete_collection"):
+            for c in attempted:
+                try:
+                    vs.client.delete_collection(name=c)
+                    deleted["vector_store"]["deleted_collections"].append({"collection": c, "ok": True})
+                except Exception as inner:
+                    deleted["vector_store"]["errors"].append({"collection": c, "error": str(inner)})
+
+        else:
+            deleted["vector_store"]["errors"].append(
+                {"collection": attempted[0], "error": "No delete_collection support found in services.vector_langchain"}
+            )
+
+    except Exception as e:
+        deleted["vector_store"]["errors"].append({"collection": attempted[0], "error": f"Vector layer import/delete failed: {e}"})
+
+    return {"status": "ok", "deleted": deleted}
