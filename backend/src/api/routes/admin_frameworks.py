@@ -7,7 +7,8 @@ import re
 import shutil
 import yaml
 import json
-from datetime import datetime
+
+from engine.ingest_guidelines import chunk_pages
 
 router = APIRouter(prefix="/admin/frameworks", tags=["admin-frameworks"])
 
@@ -95,51 +96,19 @@ def _default_prompts(display_name: str, framework_slug: str) -> Dict[str, Any]:
 def _ensure_framework_exists(slug: str) -> None:
     if not _fw_dir(slug).exists():
         raise HTTPException(status_code=404, detail=f"Framework not found: {slug}")
-    
-def _build_framework_chunks_jsonl(framework: str, pdf_path: Path) -> Dict[str, Any]:
+
+
+def _auto_chunk_framework(framework: str) -> Dict[str, Any]:
     """
-    Build guidelines/<framework>/chunks/chunks.jsonl from the given PDF.
+    After a methodology PDF upload, build:
+      guidelines/<framework>/chunks/chunks.jsonl
+      guidelines/<framework>/chunks/manifest.json
+    using engine.ingest_guidelines.chunk_pages()
     """
-    # Import your existing chunking + PDF extraction utilities
-    from services.ingest_guidelines import _extract_pdf, _chunk_by_tokens, _sha256  # type: ignore
-
-    out_dir = _chunks_dir(framework)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = out_dir / "chunks.jsonl"
-    tmp_path = out_dir / "chunks.jsonl.tmp"
-
-    parts = _extract_pdf(pdf_path)  # [(page, text)]
-    count = 0
-
-    # Write atomically: tmp -> rename
-    with tmp_path.open("w", encoding="utf-8") as f:
-        for page, raw in parts:
-            raw = (raw or "").strip()
-            if not raw:
-                continue
-            chunks = _chunk_by_tokens(raw, chunk_size=500, overlap=80)
-            for ci, ch in enumerate(chunks, start=1):
-                sha = _sha256(f"{framework}:{pdf_path.name}:{page}:{ci}:{ch[:64]}")
-                obj = {
-                    "framework": framework,
-                    "source_pdf": pdf_path.name,
-                    "page": int(page),
-                    "chunk_index": int(ci),
-                    "sha256": sha,
-                    "text": ch,
-                }
-                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-                count += 1
-
-    # Replace old file
-    tmp_path.replace(out_path)
-
-    return {
-        "chunks_file": f"chunks/{out_path.name}",
-        "source_pdf": pdf_path.name,
-        "count": count,
-    }
+    fw_dir = _fw_dir(framework)
+    # chunk_pages processes ALL PDFs in source/ (sorted) and writes chunks.jsonl + manifest.json
+    manifest = chunk_pages(fw_dir, framework, chunk_size=500, overlap=80)
+    return manifest
 
 
 # -----------------------
@@ -159,10 +128,12 @@ def list_frameworks():
         if not p.is_dir() or p.name.startswith("."):
             continue
         slug = p.name
+        chunks_jsonl = _chunks_dir(slug) / "chunks.jsonl"
         out.append({
             "slug": slug,
             "has_prompts": _prompts_path(slug).exists(),
-            "has_chunks": _chunks_dir(slug).exists(),
+            # ✅ true only if chunks.jsonl exists (not just the folder)
+            "has_chunks": chunks_jsonl.exists(),
             "chunks_files": [f.name for f in _chunks_dir(slug).glob("*") if f.is_file()] if _chunks_dir(slug).exists() else [],
             "has_source": _source_dir(slug).exists(),
             "source_files": [f.name for f in _source_dir(slug).glob("*") if f.is_file()] if _source_dir(slug).exists() else [],
@@ -252,12 +223,10 @@ def upload_methodology(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed saving PDF: {e}")
 
-    # Auto-build chunks.jsonl immediately
+    # Auto-chunk ALL PDFs in source/ into chunks.jsonl + manifest.json
     try:
-        chunks_info = _build_framework_chunks_jsonl(framework, dest)
+        manifest = _auto_chunk_framework(framework)
     except Exception as e:
-        # If chunking fails, you can choose whether to keep the PDF or roll back.
-        # Keeping it is often better for debugging; returning a clear error.
         raise HTTPException(
             status_code=500,
             detail=f"PDF uploaded but failed to build chunks.jsonl: {e}",
@@ -267,7 +236,7 @@ def upload_methodology(
         "status": "ok",
         "framework": framework,
         "saved": f"source/{dest.name}",
-        "chunks": chunks_info,
+        "chunk_manifest": manifest,
     }
 
 
@@ -354,6 +323,7 @@ def clone_prompts(framework: str, body: Dict[str, Any]):
     shutil.copyfile(src, dst)
     return {"status": "ok", "framework": framework, "cloned_from": src_fw}
 
+
 @router.patch("/{framework}")
 def update_framework_name(framework: str, body: Dict[str, Any]):
     """
@@ -367,7 +337,6 @@ def update_framework_name(framework: str, body: Dict[str, Any]):
     if not isinstance(display_name, str) or not display_name.strip():
         raise HTTPException(status_code=400, detail="display_name must be a non-empty string")
 
-    # simplest storage option: write into a catalog file under guidelines/
     catalog_path = GUIDELINES_DIR / "frameworks.yaml"
     catalog: Dict[str, Any] = {}
     if catalog_path.exists():
@@ -381,6 +350,7 @@ def update_framework_name(framework: str, body: Dict[str, Any]):
 
     return {"status": "ok", "framework": framework, "display_name": display_name.strip()}
 
+
 @router.delete("/{framework}")
 def delete_framework(framework: str):
     """
@@ -389,7 +359,7 @@ def delete_framework(framework: str):
     Deletes:
       - guidelines/<framework>/ (everything under it)
       - guidelines/frameworks.yaml entry for <framework> (and removes alias references)
-      - vector collections: fw_<framework> (and other common patterns if present)
+      - vector collections: fw_<framework>
 
     Always returns what was deleted (or attempted).
     """
@@ -419,9 +389,8 @@ def delete_framework(framework: str):
 
     # ---- 1) enumerate + delete guidelines/<framework>/ ----
     try:
-        # snapshot before delete
         files = [str(p.relative_to(fw_path)) for p in fw_path.rglob("*") if p.is_file()]
-        dirs  = [str(p.relative_to(fw_path)) for p in fw_path.rglob("*") if p.is_dir()]
+        dirs = [str(p.relative_to(fw_path)) for p in fw_path.rglob("*") if p.is_dir()]
 
         deleted["guidelines_files_deleted"] = sorted(files)
         deleted["guidelines_dirs_deleted"] = sorted(dirs)
@@ -440,23 +409,15 @@ def delete_framework(framework: str):
             fw_map = catalog.get("frameworks")
 
             if isinstance(fw_map, dict):
-                # remove direct entry
                 if framework in fw_map:
                     fw_map.pop(framework, None)
                     deleted["catalog"]["entry_deleted"] = True
 
-                # remove aliases references in OTHER entries (if you later add aliasing)
-                # Supports either:
-                #   frameworks:
-                #     x:
-                #       aliases: ["old_slug", ...]
-                # or any string fields containing the slug (best-effort)
                 removed_aliases: List[Dict[str, Any]] = []
                 for slug, meta in fw_map.items():
                     if not isinstance(meta, dict):
                         continue
 
-                    # aliases list
                     aliases = meta.get("aliases")
                     if isinstance(aliases, list):
                         before = list(aliases)
@@ -465,7 +426,6 @@ def delete_framework(framework: str):
                             meta["aliases"] = after
                             removed_aliases.append({"framework": slug, "removed_from": "aliases", "removed_value": framework})
 
-                    # optional: remove if stored as legacy fields
                     for k in ("previous_slug", "old_slug"):
                         if meta.get(k) == framework:
                             meta.pop(k, None)
@@ -479,27 +439,22 @@ def delete_framework(framework: str):
         deleted["errors"].append(f"Failed updating frameworks.yaml catalog: {e}")
 
     # ---- 3) delete vector-store collections for this framework ----
-    # Your orchestrator uses fw_<framework> for guidelines retrieval.
-    # We'll attempt to delete at least that. If your vector layer doesn't support delete,
-    # we still return attempted collections.
     attempted = [f"fw_{framework}"]
     deleted["vector_store"]["attempted_collections"] = attempted
 
     try:
-        # Try to call an optional delete function if present in services.vector_langchain
-        # without breaking older installs.
         from services import vector_langchain as vs  # type: ignore
 
-        # preferred: explicit delete API
         if hasattr(vs, "delete_collection") and callable(getattr(vs, "delete_collection")):
             for c in attempted:
                 try:
-                    ok = vs.delete_collection(collection_name=c)  # expected True/False or None
-                    deleted["vector_store"]["deleted_collections"].append({"collection": c, "ok": bool(ok) if ok is not None else True})
+                    ok = vs.delete_collection(collection_name=c)
+                    deleted["vector_store"]["deleted_collections"].append(
+                        {"collection": c, "ok": bool(ok) if ok is not None else True}
+                    )
                 except Exception as inner:
                     deleted["vector_store"]["errors"].append({"collection": c, "error": str(inner)})
 
-        # fallback: some implementations expose a "client" with delete_collection
         elif hasattr(vs, "client") and hasattr(vs.client, "delete_collection"):
             for c in attempted:
                 try:
@@ -514,6 +469,8 @@ def delete_framework(framework: str):
             )
 
     except Exception as e:
-        deleted["vector_store"]["errors"].append({"collection": attempted[0], "error": f"Vector layer import/delete failed: {e}"})
+        deleted["vector_store"]["errors"].append(
+            {"collection": attempted[0], "error": f"Vector layer import/delete failed: {e}"}
+        )
 
     return {"status": "ok", "deleted": deleted}
