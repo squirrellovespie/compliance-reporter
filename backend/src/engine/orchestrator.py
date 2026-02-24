@@ -18,7 +18,7 @@ RUNS_DIR.mkdir(parents=True, exist_ok=True)
 # ---- Rolling context knobs ----
 MEM_SUMMARY_TOKENS = 350       # target length of rolling narrative memory
 MEM_POINTS_LIMIT   = 12        # max bullets carried forward
-RETRIEVE_K         = 8         # top-k RAG chunks per section
+RETRIEVE_K         = 20         # top-k RAG chunks per section
 
 
 # ---------- Rolling Memory ----------

@@ -95,6 +95,51 @@ def _default_prompts(display_name: str, framework_slug: str) -> Dict[str, Any]:
 def _ensure_framework_exists(slug: str) -> None:
     if not _fw_dir(slug).exists():
         raise HTTPException(status_code=404, detail=f"Framework not found: {slug}")
+    
+def _build_framework_chunks_jsonl(framework: str, pdf_path: Path) -> Dict[str, Any]:
+    """
+    Build guidelines/<framework>/chunks/chunks.jsonl from the given PDF.
+    """
+    # Import your existing chunking + PDF extraction utilities
+    from services.ingest_guidelines import _extract_pdf, _chunk_by_tokens, _sha256  # type: ignore
+
+    out_dir = _chunks_dir(framework)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = out_dir / "chunks.jsonl"
+    tmp_path = out_dir / "chunks.jsonl.tmp"
+
+    parts = _extract_pdf(pdf_path)  # [(page, text)]
+    count = 0
+
+    # Write atomically: tmp -> rename
+    with tmp_path.open("w", encoding="utf-8") as f:
+        for page, raw in parts:
+            raw = (raw or "").strip()
+            if not raw:
+                continue
+            chunks = _chunk_by_tokens(raw, chunk_size=500, overlap=80)
+            for ci, ch in enumerate(chunks, start=1):
+                sha = _sha256(f"{framework}:{pdf_path.name}:{page}:{ci}:{ch[:64]}")
+                obj = {
+                    "framework": framework,
+                    "source_pdf": pdf_path.name,
+                    "page": int(page),
+                    "chunk_index": int(ci),
+                    "sha256": sha,
+                    "text": ch,
+                }
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                count += 1
+
+    # Replace old file
+    tmp_path.replace(out_path)
+
+    return {
+        "chunks_file": f"chunks/{out_path.name}",
+        "source_pdf": pdf_path.name,
+        "count": count,
+    }
 
 
 # -----------------------
@@ -118,6 +163,7 @@ def list_frameworks():
             "slug": slug,
             "has_prompts": _prompts_path(slug).exists(),
             "has_chunks": _chunks_dir(slug).exists(),
+            "chunks_files": [f.name for f in _chunks_dir(slug).glob("*") if f.is_file()] if _chunks_dir(slug).exists() else [],
             "has_source": _source_dir(slug).exists(),
             "source_files": [f.name for f in _source_dir(slug).glob("*") if f.is_file()] if _source_dir(slug).exists() else [],
         })
@@ -183,17 +229,8 @@ def upload_methodology(
     overwrite: bool = True,
 ):
     """
-    2) Upload/replace ONE methodology file into guidelines/<framework>/source/.
-
-    - Accepts only PDFs.
-    - Saves as the uploaded filename by default.
-    - If overwrite=false and file exists => 409
-
-    Query:
-      overwrite=true|false
-
-    Form-data:
-      file: <PDF>
+    Upload methodology PDF into guidelines/<framework>/source/ AND
+    automatically generate guidelines/<framework>/chunks/chunks.jsonl.
     """
     framework = _validate_slug(framework)
     _ensure_framework_exists(framework)
@@ -208,10 +245,30 @@ def upload_methodology(
     if dest.exists() and not overwrite:
         raise HTTPException(status_code=409, detail=f"File already exists: {dest.name}")
 
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # Save PDF
+    try:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed saving PDF: {e}")
 
-    return {"status": "ok", "framework": framework, "saved": f"source/{dest.name}"}
+    # Auto-build chunks.jsonl immediately
+    try:
+        chunks_info = _build_framework_chunks_jsonl(framework, dest)
+    except Exception as e:
+        # If chunking fails, you can choose whether to keep the PDF or roll back.
+        # Keeping it is often better for debugging; returning a clear error.
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF uploaded but failed to build chunks.jsonl: {e}",
+        )
+
+    return {
+        "status": "ok",
+        "framework": framework,
+        "saved": f"source/{dest.name}",
+        "chunks": chunks_info,
+    }
 
 
 @router.get("/{framework}/methodology")
