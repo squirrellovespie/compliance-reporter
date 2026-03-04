@@ -111,6 +111,9 @@ def _run_stream_to_webhook(
             provider=req.provider,
             model=req.model,
             retrieval_strategy=req.retrieval_strategy,
+            system_score=req.system_score,
+            assessor_score=req.assessor_score,
+            responsive_score=req.responsive_score,
             run_id=pre_run_id,
         )
 
