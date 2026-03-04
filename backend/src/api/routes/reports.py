@@ -34,7 +34,9 @@ class RunReportRequest(BaseModel):
     provider: str = "openai"              # e.g., "openai", "xai"
     model: Optional[str] = None           # e.g., "gpt-4o-mini", "grok-4-latest"
     retrieval_strategy: Optional[str] = None  # "cosine" | "mmr" | "hybrid"
-
+    system_score: Optional[str] = None
+    assessor_score: Optional[str] = None
+    responsive_score: Optional[str] = None
     # For webhook mode (Cloudflare-safe)
     webhook_url: Optional[str] = None     # if set, events are pushed to this URL
 
