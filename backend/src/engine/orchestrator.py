@@ -18,7 +18,7 @@ RUNS_DIR.mkdir(parents=True, exist_ok=True)
 # ---- Rolling context knobs ----
 MEM_SUMMARY_TOKENS = 350       # target length of rolling narrative memory
 MEM_POINTS_LIMIT   = 12        # max bullets carried forward
-RETRIEVE_K         = 20         # top-k RAG chunks per section
+RETRIEVE_K         = 20        # top-k RAG chunks per section
 
 
 # ---------- Rolling Memory ----------
@@ -42,6 +42,28 @@ class RollingMemory:
                 ("…" if len(self.used_evidence) > 15 else "")
             )
         return "\n\n".join(parts)
+
+
+# ---------- score helpers ----------
+def _na_if_missing(v: Optional[Any]) -> str:
+    if v is None:
+        return "NA"
+    if isinstance(v, str) and not v.strip():
+        return "NA"
+    return str(v).strip() if isinstance(v, str) else str(v)
+
+def _scores_prompt_block(system_score: str, assessor_score: str, responsive_score: str) -> str:
+    """
+    Small block injected into every section so the model stays consistent.
+    Keep it short; use it for consistency, not as a scoring instruction.
+    """
+    return (
+        "Scores Context (use consistently throughout the report; do not invent missing values):\n"
+        f"- System score (SEAL-calculated): {system_score}\n"
+        f"- Assessor score (human verifier): {assessor_score}\n"
+        f"- Responsive score (firm responsiveness): {responsive_score}\n"
+        "Guidance: If a score is NA, state it as NA (not available) and proceed without guessing.\n"
+    )
 
 
 # ---------- helpers ----------
@@ -82,7 +104,7 @@ def _retrieve_chunks(
     framework: str,
     firm: str,
     query_text: str,
-    used_ev: Set[Tuple[str,int]],
+    used_ev: Set[Tuple[str, int]],
     *,
     k: int = RETRIEVE_K,
     retrieval_strategy: Optional[str] = None,  # "cosine" | "mmr" | "hybrid"
@@ -104,12 +126,12 @@ def _retrieve_chunks(
                 rows = vs_query(
                     collection_name=collection,
                     text=query_text,
-                    k=k*2,
+                    k=k * 2,
                     strategy=retrieval_strategy,
                 ) or []
             except TypeError:
                 # Back-compat with older signature (no strategy)
-                rows = vs_query(collection_name=collection, text=query_text, k=k*2) or []
+                rows = vs_query(collection_name=collection, text=query_text, k=k * 2) or []
 
             for r in rows:
                 m = r.get("metadata", {}) or {}
@@ -125,17 +147,17 @@ def _retrieve_chunks(
             # collection may not exist yet; ignore
             pass
 
-    _pull(f"fw_{framework}",        f"fw_{framework}")
-    _pull(f"assessment_{firm}",     f"assessment_{firm}")
-    _pull(f"evidence_{firm}",       f"evidence_{firm}")
+    _pull(f"fw_{framework}", f"fw_{framework}")
+    _pull(f"assessment_{firm}", f"assessment_{firm}")
+    _pull(f"evidence_{firm}", f"evidence_{firm}")
 
     # De-duplicate by (doc_id, page, text_head) and split into fresh vs already used
     seen = set()
     fresh, dups = [], []
     for r in pool:
         doc_id = r["metadata"]["doc_id"]
-        page   = r["metadata"]["page"]
-        head   = (r["text"][:120] or "").strip()
+        page = r["metadata"]["page"]
+        head = (r["text"][:120] or "").strip()
         key_all = (doc_id, page, head)
         if key_all in seen:
             continue
@@ -174,11 +196,16 @@ def _render_section_llm(
     firm: str,
     scope: Optional[str],
     retrieval_strategy: Optional[str],
+    # NEW: score context
+    system_score: str,
+    assessor_score: str,
+    responsive_score: str,
 ) -> Dict[str, Any]:
     """
     Produce one section text using:
     - Overarching prompt
     - Rolling memory (prior narrative + bullets + used evidence)
+    - Score context (system/assessor/responsive)
     - Fresh RAG chunks (with dedupe against used evidence)
     Also returns 'rag_debug' list for UI inspection.
     """
@@ -193,15 +220,15 @@ def _render_section_llm(
     )
 
     ev_lines: List[str] = []
-    new_used: Set[Tuple[str,int]] = set()
+    new_used: Set[Tuple[str, int]] = set()
     rag_debug: List[Dict[str, Any]] = []
 
     for c in chunks:
-        meta   = c["metadata"]
+        meta = c["metadata"]
         doc_id = meta["doc_id"]
-        page   = meta["page"]
-        text   = c["text"]
-        score  = c.get("score")
+        page = meta["page"]
+        text = c["text"]
+        score = c.get("score")
         source = c.get("source")
 
         ev_lines.append(f"[{doc_id} p.{page}] {text[:800]}")
@@ -211,25 +238,30 @@ def _render_section_llm(
             "page": page,
             "score": float(score) if isinstance(score, (int, float)) else None,
             "preview": (text or "")[:400].replace("\n", " ").strip(),
-            "source": source,  # tells you fw_ / assessment_ / evidence_
+            "source": source,
         })
+
+    scores_block = _scores_prompt_block(system_score, assessor_score, responsive_score)
 
     system = (
         f"You are generating the '{section_name}' section of a compliance report for '{firm}'. "
         f"Maintain coherence and avoid repeating earlier points.\n\n"
-        f"Global Guidance:\n{(overarching_prompt or '').strip()}"
+        f"Global Guidance:\n{(overarching_prompt or '').strip()}\n\n"
+        f"{scores_block}"
     )
     user = (
         f"Section directive:\n{section_prompt.strip()}\n\n"
         f"{memory.to_prompt_block()}\n\n"
+        f"{scores_block}\n"
         "Use the retrieved evidence to ground claims (quote minimally, synthesize conclusions):\n"
         + "\n---\n".join(ev_lines)
     )
+
     text = chat_complete(
         provider=provider, model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=0.3, max_tokens=1100,
-        response_format=None  # narrative text; no JSON required
+        response_format=None
     )
     return {
         "text": text,
@@ -252,6 +284,10 @@ def generate_report_sections(
     prompt_overrides: Dict[str, str],
     include_rag_debug: bool = False,
     retrieval_strategy: Optional[str] = None,
+    # NEW: score context
+    system_score: str = "NA",
+    assessor_score: str = "NA",
+    responsive_score: str = "NA",
 ) -> tuple[Dict[str, str], Optional[Dict[str, List[Dict[str, Any]]]]]:
     """
     Generate all section texts with rolling memory.
@@ -291,6 +327,9 @@ def generate_report_sections(
             firm=firm,
             scope=scope,
             retrieval_strategy=retrieval_strategy,
+            system_score=system_score,
+            assessor_score=assessor_score,
+            responsive_score=responsive_score,
         )
         text: str = sec["text"]
         out_text[sec_name] = text
@@ -322,14 +361,21 @@ def run_report(
     overarching_prompt: str,
     include_rag_debug: bool = False,
     retrieval_strategy: Optional[str] = None,
+    # NEW: score params (default NA)
+    system_score: Optional[Any] = None,
+    assessor_score: Optional[Any] = None,
+    responsive_score: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Synchronous report generation (non-streaming).
     Persists the run JSON and returns the result payload.
     """
+    sys_s = _na_if_missing(system_score)
+    asr_s = _na_if_missing(assessor_score)
+    rsp_s = _na_if_missing(responsive_score)
+
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
-
     findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
 
     sections_text, rag_debug = generate_report_sections(
@@ -342,6 +388,9 @@ def run_report(
         prompt_overrides=prompt_overrides or {},
         include_rag_debug=include_rag_debug,
         retrieval_strategy=retrieval_strategy,
+        system_score=sys_s,
+        assessor_score=asr_s,
+        responsive_score=rsp_s,
     )
 
     run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
@@ -349,6 +398,12 @@ def run_report(
         "run_id": run_id,
         "framework": framework,
         "firm": firm,
+        "scope": scope,
+        "scores": {
+            "system_score": sys_s,
+            "assessor_score": asr_s,
+            "responsive_score": rsp_s,
+        },
         "selected_sections": [s["name"] for s in selected_sections],
         "sections": sections_text,
         "findings": findings,
@@ -374,6 +429,10 @@ def run_report_stream(
     model: Optional[str],
     retrieval_strategy: Optional[str] = None,
     run_id: Optional[str] = None,
+    # NEW: score params (default NA)
+    system_score: Optional[Any] = None,
+    assessor_score: Optional[Any] = None,
+    responsive_score: Optional[Any] = None,
 ) -> Iterable[str]:
     """
     NDJSON streamer. Yields JSON lines as text events:
@@ -388,6 +447,10 @@ def run_report_stream(
     If run_id is provided, it is used for all events and the saved file;
     otherwise a new one is generated.
     """
+    sys_s = _na_if_missing(system_score)
+    asr_s = _na_if_missing(assessor_score)
+    rsp_s = _na_if_missing(responsive_score)
+
     assessor_cls = get_assessor(framework)
     assessor: BaseFrameworkAssessor = assessor_cls()
     findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
@@ -396,7 +459,18 @@ def run_report_stream(
     if run_id is None:
         run_id = f"{framework}-{firm}-{os.getpid()}-{abs(hash((framework, firm)))%10**9}"
 
-    yield json.dumps({"event": "start", "run_id": run_id, "framework": framework, "firm": firm}) + "\n"
+    yield json.dumps({
+        "event": "start",
+        "run_id": run_id,
+        "framework": framework,
+        "firm": firm,
+        "scope": scope,
+        "scores": {
+            "system_score": sys_s,
+            "assessor_score": asr_s,
+            "responsive_score": rsp_s,
+        },
+    }) + "\n"
 
     # Rolling memory + outline
     memory = RollingMemory()
@@ -421,6 +495,11 @@ def run_report_stream(
             "run_id": run_id,
             "section_id": sec_id,
             "section_name": sec_name,
+            "scores": {
+                "system_score": sys_s,
+                "assessor_score": asr_s,
+                "responsive_score": rsp_s,
+            },
         }) + "\n"
 
         sec = _render_section_llm(
@@ -434,6 +513,9 @@ def run_report_stream(
             firm=firm,
             scope=scope,
             retrieval_strategy=retrieval_strategy,
+            system_score=sys_s,
+            assessor_score=asr_s,
+            responsive_score=rsp_s,
         )
 
         text: str = sec["text"]
@@ -463,6 +545,12 @@ def run_report_stream(
         "run_id": run_id,
         "framework": framework,
         "firm": firm,
+        "scope": scope,
+        "scores": {
+            "system_score": sys_s,
+            "assessor_score": asr_s,
+            "responsive_score": rsp_s,
+        },
         "selected_sections": [s["name"] for s in selected_sections],
         "sections": sections_text,
         "findings": findings,
