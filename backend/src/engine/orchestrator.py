@@ -564,6 +564,359 @@ def run_report_stream(
     yield json.dumps({"event": "end", "run_id": run_id, "ok": True}) + "\n"
 
 
+# ---------- panel report helpers (ADDITIVE) ----------
+def _normalize_panel_scores(
+    firm_ids: List[str],
+    scores_by_firm: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Dict[str, str]]:
+    scores_by_firm = scores_by_firm or {}
+    out: Dict[str, Dict[str, str]] = {}
+    for firm in firm_ids:
+        raw = scores_by_firm.get(firm, {}) or {}
+        out[firm] = {
+            "system_score": _na_if_missing(raw.get("system_score")),
+            "assessor_score": _na_if_missing(raw.get("assessor_score")),
+            "responsive_score": _na_if_missing(raw.get("responsive_score")),
+        }
+    return out
+
+
+def _panel_scores_prompt_block(scores_by_firm: Dict[str, Dict[str, str]]) -> str:
+    if not scores_by_firm:
+        return (
+            "Panel Scores Context:\n"
+            "- No firm-specific scores were provided. Treat all missing values as NA.\n"
+        )
+
+    lines = ["Panel Scores Context (use consistently throughout the report; do not invent missing values):"]
+    for firm in sorted(scores_by_firm.keys()):
+        s = scores_by_firm.get(firm, {})
+        lines.append(
+            f"- Firm {firm}: "
+            f"System={s.get('system_score', 'NA')}, "
+            f"Assessor={s.get('assessor_score', 'NA')}, "
+            f"Responsive={s.get('responsive_score', 'NA')}"
+        )
+    lines.append("Guidance: If a score is NA, state it as NA and do not infer it.")
+    return "\n".join(lines)
+
+
+def _build_panel_firm_summary(
+    *,
+    provider: str,
+    model: Optional[str],
+    framework: str,
+    firm: str,
+    scope: Optional[str],
+    retrieval_strategy: Optional[str],
+    system_score: str,
+    assessor_score: str,
+    responsive_score: str,
+) -> Dict[str, Any]:
+    """
+    Build a compact, panel-ready summary for one firm.
+    This is additive and does not affect single-firm report generation.
+    """
+    assessor_cls = get_assessor(framework)
+    assessor: BaseFrameworkAssessor = assessor_cls()
+    findings = assessor.build_findings(BuildContext(firm=firm, scope=scope))
+
+    meets = [f for f in findings if (f.get("assessment") or "").lower() == "meets"]
+    follow_up = [f for f in findings if (f.get("assessment") or "").lower() != "meets"]
+
+    findings_brief: List[str] = []
+    for f in meets[:4]:
+        findings_brief.append(
+            f"- Strength: {f.get('control_id')} / {f.get('micro_requirement_id')} :: {f.get('claim')}"
+        )
+    for f in follow_up[:4]:
+        findings_brief.append(
+            f"- Follow-up: {f.get('control_id')} / {f.get('micro_requirement_id')} :: {f.get('claim')}"
+        )
+
+    retrieval_query = f"Overall panel summary context for firm {firm}. Scope: {scope or 'full'}"
+    chunks = _retrieve_chunks(
+        framework=framework,
+        firm=firm,
+        query_text=retrieval_query,
+        used_ev=set(),
+        k=min(RETRIEVE_K, 8),
+        retrieval_strategy=retrieval_strategy,
+    )
+
+    ev_lines: List[str] = []
+    for c in chunks[:6]:
+        meta = c["metadata"]
+        ev_lines.append(
+            f"[{meta['doc_id']} p.{meta['page']}] {(c['text'] or '')[:300]}"
+        )
+
+    scores_block = _scores_prompt_block(system_score, assessor_score, responsive_score)
+    summary_prompt = (
+        f"Prepare a short panel-ready summary for law firm '{firm}'.\n\n"
+        f"{scores_block}\n"
+        f"Structured findings summary:\n"
+        + ("\n".join(findings_brief) if findings_brief else "- No structured findings available.")
+        + "\n\nEvidence snippets:\n"
+        + ("\n".join(ev_lines) if ev_lines else "- No additional evidence snippets retrieved.")
+        + "\n\nWrite 1 short paragraph and 3-5 concise bullets covering:\n"
+        "- overall posture\n"
+        "- notable strengths\n"
+        "- notable gaps or follow-up needs\n"
+        "- any score interpretation that materially matters\n"
+        "Do not invent facts. Keep it compressed and comparative-ready."
+    )
+
+    try:
+        summary_text = chat_complete(
+            provider=provider,
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are preparing a compact law-firm summary for a panel report."},
+                {"role": "user", "content": summary_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=500,
+            response_format=None,
+        )
+    except Exception:
+        summary_text = (
+            f"Firm {firm}: {len(meets)} requirement(s) appear met and {len(follow_up)} require follow-up. "
+            f"System score={system_score}, Assessor score={assessor_score}, Responsive score={responsive_score}."
+        )
+
+    return {
+        "firm": firm,
+        "scope": scope,
+        "scores": {
+            "system_score": system_score,
+            "assessor_score": assessor_score,
+            "responsive_score": responsive_score,
+        },
+        "findings": findings,
+        "finding_counts": {
+            "total": len(findings),
+            "meets": len(meets),
+            "follow_up": len(follow_up),
+        },
+        "summary_text": (summary_text or "").strip(),
+    }
+
+
+def _build_panel_context(
+    firm_summaries: List[Dict[str, Any]],
+    scores_by_firm: Dict[str, Dict[str, str]],
+) -> str:
+    parts: List[str] = []
+    parts.append(_panel_scores_prompt_block(scores_by_firm))
+    parts.append("Firm-by-firm panel context:")
+    for fs in firm_summaries:
+        parts.append(f"\nFirm: {fs['firm']}")
+        parts.append(
+            f"Finding counts: total={fs['finding_counts']['total']}, "
+            f"meets={fs['finding_counts']['meets']}, "
+            f"follow_up={fs['finding_counts']['follow_up']}"
+        )
+        parts.append(fs["summary_text"])
+    return "\n".join(parts)
+
+
+def _render_panel_section_llm(
+    *,
+    provider: str,
+    model: Optional[str],
+    framework: str,
+    section_id: str,
+    section_name: str,
+    section_prompt: str,
+    overarching_prompt: str,
+    memory: RollingMemory,
+    panel_context: str,
+) -> Dict[str, Any]:
+    system = (
+        f"You are generating the '{section_name}' section of a concise panel compliance report. "
+        f"Maintain coherence, keep the report short, and avoid repetition.\n\n"
+        f"Global Guidance:\n{(overarching_prompt or '').strip()}"
+    )
+    user = (
+        f"Section directive:\n{section_prompt.strip()}\n\n"
+        f"{memory.to_prompt_block()}\n\n"
+        f"Panel Context:\n{panel_context}\n\n"
+        "Write only this section. Keep it concise, comparative, and suitable for a 1-3 page report."
+    )
+
+    text = chat_complete(
+        provider=provider,
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.25,
+        max_tokens=900,
+        response_format=None,
+    )
+    return {
+        "text": text,
+        "used": set(),
+        "rag_debug": [],
+        "section_id": section_id,
+        "section_name": section_name,
+    }
+
+
+def run_panel_report_stream(
+    *,
+    framework: str,
+    firm_ids: List[str],
+    scope: Optional[str],
+    selected_sections: List[Dict[str, Any]],
+    prompt_overrides: Dict[str, str],
+    overarching_prompt: str,
+    provider: str,
+    model: Optional[str],
+    retrieval_strategy: Optional[str] = None,
+    scores_by_firm: Optional[Dict[str, Dict[str, Any]]] = None,
+    run_id: Optional[str] = None,
+) -> Iterable[str]:
+    """
+    Streaming panel report generator.
+    ADDITIVE: does not change existing single-firm run_report_stream behavior.
+    """
+    normalized_scores = _normalize_panel_scores(firm_ids, scores_by_firm)
+
+    if run_id is None:
+        run_id = f"panel-{framework}-{abs(hash(tuple(sorted(firm_ids)))) % 10**9}-{os.getpid()}"
+
+    yield json.dumps({
+        "event": "start",
+        "run_id": run_id,
+        "report_type": "panel",
+        "framework": framework,
+        "firm_ids": firm_ids,
+        "scope": scope,
+        "scores_by_firm": normalized_scores,
+    }) + "\n"
+
+    firm_summaries: List[Dict[str, Any]] = []
+    for firm in firm_ids:
+        yield json.dumps({
+            "event": "firm_summary_start",
+            "run_id": run_id,
+            "report_type": "panel",
+            "framework": framework,
+            "firm": firm,
+            "scores": normalized_scores.get(firm, {}),
+        }) + "\n"
+
+        s = normalized_scores[firm]
+        summary = _build_panel_firm_summary(
+            provider=provider,
+            model=model,
+            framework=framework,
+            firm=firm,
+            scope=scope,
+            retrieval_strategy=retrieval_strategy,
+            system_score=s["system_score"],
+            assessor_score=s["assessor_score"],
+            responsive_score=s["responsive_score"],
+        )
+        firm_summaries.append(summary)
+
+        yield json.dumps({
+            "event": "firm_summary",
+            "run_id": run_id,
+            "report_type": "panel",
+            "framework": framework,
+            "firm": firm,
+            "finding_counts": summary["finding_counts"],
+            "scores": summary["scores"],
+            "summary_text": summary["summary_text"],
+        }) + "\n"
+
+    memory = RollingMemory()
+    panel_context = _build_panel_context(firm_summaries, normalized_scores)
+
+    outline_msg = [
+        {"role": "system", "content": "You are an audit report planner."},
+        {"role": "user", "content": "Create a short 1-level outline for the following panel report sections in order:\n" +
+                                    "\n".join(f"- {s['name']}" for s in selected_sections)}
+    ]
+    outline = chat_complete(
+        provider=provider,
+        model=model,
+        messages=outline_msg,
+        temperature=0.2,
+        max_tokens=180,
+        response_format=None,
+    )
+    memory.points = [ln.strip("- ").strip() for ln in outline.split("\n") if ln.strip()][:MEM_POINTS_LIMIT]
+
+    sections_text: Dict[str, str] = {}
+
+    for s in selected_sections:
+        sec_id = s["id"]
+        sec_name = s["name"]
+        sec_prompt = (prompt_overrides.get(sec_id) or s.get("default_prompt") or "").strip()
+
+        yield json.dumps({
+            "event": "section_start",
+            "run_id": run_id,
+            "report_type": "panel",
+            "section_id": sec_id,
+            "section_name": sec_name,
+        }) + "\n"
+
+        sec = _render_panel_section_llm(
+            provider=provider,
+            model=model,
+            framework=framework,
+            section_id=sec_id,
+            section_name=sec_name,
+            section_prompt=sec_prompt,
+            overarching_prompt=overarching_prompt,
+            memory=memory,
+            panel_context=panel_context,
+        )
+
+        text = sec["text"]
+        sections_text[sec_name] = text
+
+        yield json.dumps({
+            "event": "section_text",
+            "run_id": run_id,
+            "report_type": "panel",
+            "section_id": sec_id,
+            "section_name": sec_name,
+            "text": text,
+        }) + "\n"
+
+        summ = _summarize_text_for_memory(text, provider=provider, model=model)
+        combined = (memory.narrative_summary + "\n" + (summ.get("narrative") or "")).strip()
+        re_summ = _summarize_text_for_memory(combined, provider=provider, model=model)
+        memory.narrative_summary = (re_summ.get("narrative") or "")[:MEM_SUMMARY_TOKENS * 6]
+        memory.points = list(dict.fromkeys(memory.points + (summ.get("bullets") or [])))[:MEM_POINTS_LIMIT]
+
+    out: Dict[str, Any] = {
+        "run_id": run_id,
+        "report_type": "panel",
+        "framework": framework,
+        "firm_ids": firm_ids,
+        "scope": scope,
+        "scores_by_firm": normalized_scores,
+        "selected_sections": [s["name"] for s in selected_sections],
+        "sections": sections_text,
+        "firm_summaries": firm_summaries,
+    }
+
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNS_DIR / f"{run_id}.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+
+    yield json.dumps({
+        "event": "end",
+        "run_id": run_id,
+        "report_type": "panel",
+        "ok": True
+    }) + "\n"
+
+
 def load_run(run_id: str) -> Dict[str, Any]:
     p = RUNS_DIR / f"{run_id}.json"
     if not p.exists():

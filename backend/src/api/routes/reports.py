@@ -7,12 +7,13 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import httpx
 
 from engine.orchestrator import (
     run_report,
-    run_report_stream,   # streamer (yields NDJSON lines)
+    run_report_stream,
+    run_panel_report_stream,   # ADDITIVE
     load_run,
     RUNS_DIR,
 )
@@ -28,7 +29,7 @@ class RunReportRequest(BaseModel):
     firm: str
     scope: Optional[str] = None
     selected_section_ids: List[str]
-    prompt_overrides: Dict[str, str] = {}
+    prompt_overrides: Dict[str, str] = Field(default_factory=dict)
     overarching_prompt: Optional[str] = ""
     include_rag_debug: bool = False
     provider: str = "openai"              # e.g., "openai", "xai"
@@ -39,6 +40,20 @@ class RunReportRequest(BaseModel):
     responsive_score: Optional[str] = None
     # For webhook mode (Cloudflare-safe)
     webhook_url: Optional[str] = None     # if set, events are pushed to this URL
+
+
+class PanelRunReportRequest(BaseModel):
+    framework: str
+    firm_ids: List[str]
+    scope: Optional[str] = None
+    selected_section_ids: List[str]
+    prompt_overrides: Dict[str, str] = Field(default_factory=dict)
+    overarching_prompt: Optional[str] = ""
+    provider: str = "openai"
+    model: Optional[str] = None
+    retrieval_strategy: Optional[str] = None
+    webhook_url: Optional[str] = None
+    scores_by_firm: Dict[str, Dict[str, Optional[str]]] = Field(default_factory=dict)
 
 
 class GeneratePdfRequest(BaseModel):
@@ -126,7 +141,6 @@ def _run_stream_to_webhook(
                 try:
                     evt = json.loads(line)
                 except Exception:
-                    # if the line isn't valid JSON, just log and skip
                     print(f"[run_stream_to_webhook] Failed to parse line: {line!r}")
                     continue
 
@@ -145,8 +159,6 @@ def _run_stream_to_webhook(
                 except Exception as post_err:
                     print(f"[run_stream_to_webhook] Webhook POST error: {post_err}")
 
-            # Final notification: tell consumer that PDF is ready to be downloaded
-            # via GET /reports/{run_id}/pdf
             if run_id_seen:
                 try:
                     final_payload = {
@@ -161,7 +173,6 @@ def _run_stream_to_webhook(
 
     except Exception as e:
         traceback.print_exc()
-        # Best-effort failure notification to the webhook
         try:
             if webhook_url:
                 with httpx.Client(timeout=10.0) as client:
@@ -177,6 +188,98 @@ def _run_stream_to_webhook(
                     )
         except Exception as post_err:
             print(f"[run_stream_to_webhook] Error sending failure event: {post_err}")
+
+
+def _run_panel_stream_to_webhook(
+    req: PanelRunReportRequest,
+    selected_sections: List[Dict[str, Any]],
+    overarching: str,
+    pre_run_id: str,
+) -> None:
+    """
+    Background task for panel webhook mode.
+    ADDITIVE: does not affect existing single-firm webhook flow.
+    """
+    webhook_url = req.webhook_url
+    if not webhook_url:
+        return
+
+    run_id_seen: Optional[str] = pre_run_id
+
+    try:
+        stream: Iterable[str] = run_panel_report_stream(
+            framework=req.framework,
+            firm_ids=req.firm_ids,
+            scope=req.scope,
+            selected_sections=selected_sections,
+            prompt_overrides=req.prompt_overrides or {},
+            overarching_prompt=overarching,
+            provider=req.provider,
+            model=req.model,
+            retrieval_strategy=req.retrieval_strategy,
+            scores_by_firm=req.scores_by_firm or {},
+            run_id=pre_run_id,
+        )
+
+        with httpx.Client(timeout=10.0) as client:
+            for line in stream:
+                line = (line or "").strip()
+                if not line:
+                    continue
+
+                try:
+                    evt = json.loads(line)
+                except Exception:
+                    print(f"[run_panel_stream_to_webhook] Failed to parse line: {line!r}")
+                    continue
+
+                if evt.get("run_id"):
+                    run_id_seen = evt["run_id"]
+
+                payload = {
+                    **evt,
+                    "run_id": evt.get("run_id") or run_id_seen,
+                    "framework": req.framework,
+                    "firm_ids": req.firm_ids,
+                    "report_type": "panel",
+                }
+
+                try:
+                    client.post(webhook_url, json=payload)
+                except Exception as post_err:
+                    print(f"[run_panel_stream_to_webhook] Webhook POST error: {post_err}")
+
+            if run_id_seen:
+                try:
+                    final_payload = {
+                        "event": "pdf_ready",
+                        "run_id": run_id_seen,
+                        "framework": req.framework,
+                        "firm_ids": req.firm_ids,
+                        "report_type": "panel",
+                    }
+                    client.post(webhook_url, json=final_payload)
+                except Exception as send_err:
+                    print(f"[run_panel_stream_to_webhook] Error sending final pdf_ready event: {send_err}")
+
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            if webhook_url:
+                with httpx.Client(timeout=10.0) as client:
+                    client.post(
+                        webhook_url,
+                        json={
+                            "event": "report_failed",
+                            "framework": req.framework,
+                            "firm_ids": req.firm_ids,
+                            "error": str(e),
+                            "run_id": run_id_seen,
+                            "report_type": "panel",
+                        },
+                    )
+        except Exception as post_err:
+            print(f"[run_panel_stream_to_webhook] Error sending failure event: {post_err}")
 
 
 # ---------- Routes ----------
@@ -204,7 +307,6 @@ def run(req: RunReportRequest):
     """
     try:
         selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
-        # UI override wins, else YAML value (from prompt_store)
         overarching = (req.overarching_prompt or "").strip() or get_overarching(req.framework)
 
         result = run_report(
@@ -218,6 +320,9 @@ def run(req: RunReportRequest):
             overarching_prompt=overarching,
             include_rag_debug=req.include_rag_debug,
             retrieval_strategy=req.retrieval_strategy,
+            system_score=req.system_score,
+            assessor_score=req.assessor_score,
+            responsive_score=req.responsive_score,
         )
         return {"run_id": result["run_id"], "result": result}
     except Exception as e:
@@ -239,10 +344,8 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
        - Immediately returns a small JSON ack including run_id:
          { "status": "started", "webhook": true, "run_id": "...", ... }
     """
-    # Pre-generate a run_id for correlation (especially for webhook mode)
     pre_run_id = f"{req.framework}-{req.firm}-{uuid.uuid4().hex[:12]}"
 
-    # If a webhook URL is provided, use background webhook mode
     if req.webhook_url:
         try:
             selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
@@ -266,7 +369,6 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"/reports/run_stream webhook error: {str(e)}")
 
-    # Otherwise, keep the original NDJSON streaming behavior
     def _gen():
         try:
             selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
@@ -283,13 +385,78 @@ def run_stream(req: RunReportRequest, background_tasks: BackgroundTasks):
                 provider=req.provider,
                 model=req.model,
                 retrieval_strategy=req.retrieval_strategy,
+                system_score=req.system_score,
+                assessor_score=req.assessor_score,
+                responsive_score=req.responsive_score,
             )
             for line in stream:
-                # 'line' is already a JSON-encoded string with trailing "\n"
                 yield line
         except Exception as e:
             traceback.print_exc()
             yield json.dumps({"event": "error", "message": str(e)}) + "\n"
+
+    return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
+
+@router.post("/run_panel_stream")
+def run_panel_stream(req: PanelRunReportRequest, background_tasks: BackgroundTasks):
+    """
+    ADDITIVE panel streaming endpoint.
+    Does not modify existing /run_stream functionality.
+    """
+    if not req.firm_ids:
+        raise HTTPException(status_code=400, detail="firm_ids must contain at least one firm")
+    if len(req.firm_ids) < 2:
+        raise HTTPException(status_code=400, detail="Panel report requires at least two firms")
+
+    pre_run_id = f"panel-{req.framework}-{uuid.uuid4().hex[:12]}"
+
+    if req.webhook_url:
+        try:
+            selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
+            overarching = (req.overarching_prompt or "").strip() or get_overarching(req.framework)
+
+            background_tasks.add_task(
+                _run_panel_stream_to_webhook,
+                req,
+                selected_sections,
+                overarching,
+                pre_run_id,
+            )
+            return {
+                "status": "started",
+                "webhook": True,
+                "framework": req.framework,
+                "firm_ids": req.firm_ids,
+                "run_id": pre_run_id,
+                "report_type": "panel",
+            }
+        except Exception as e:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"/reports/run_panel_stream webhook error: {str(e)}")
+
+    def _gen():
+        try:
+            selected_sections = _resolve_sections(req.framework, req.selected_section_ids)
+            overarching = (req.overarching_prompt or "").strip() or get_overarching(req.framework)
+
+            stream = run_panel_report_stream(
+                framework=req.framework,
+                firm_ids=req.firm_ids,
+                scope=req.scope,
+                selected_sections=selected_sections,
+                prompt_overrides=req.prompt_overrides or {},
+                overarching_prompt=overarching,
+                provider=req.provider,
+                model=req.model,
+                retrieval_strategy=req.retrieval_strategy,
+                scores_by_firm=req.scores_by_firm or {},
+            )
+            for line in stream:
+                yield line
+        except Exception as e:
+            traceback.print_exc()
+            yield json.dumps({"event": "error", "message": str(e), "report_type": "panel"}) + "\n"
 
     return StreamingResponse(_gen(), media_type="application/x-ndjson")
 
@@ -316,13 +483,11 @@ def render_pdf(req: GeneratePdfRequest):
             "run_id": run_id,
             "framework": req.framework,
             "firm": req.firm,
-            # Use the dict keys as selected_sections order (frontend can control ordering)
             "selected_sections": list(req.sections.keys()),
             "sections": req.sections,
             "findings": req.findings or {},
         }
 
-        # Reuse the same RUNS_DIR so everything is consistent
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         out_pdf = RUNS_DIR / f"{run_id}.pdf"
 
